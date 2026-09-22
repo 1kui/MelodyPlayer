@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标的 monochrome 层（Android 13+ 主题图标）。
+  系统会把它当成**单色剪影**，按壁纸取色重新染，所以这里必须是纯色、不能有渐变，
+  alpha 也要统一：前景那五根条的 0.78/0.92 差异在主题图标下会表现成"颜色不匀"，
+  看着像渲染出错，而不是设计。
+  几何与 ic_launcher_foreground 完全一致，只把 alpha 拉平到 1。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M29.58,45.75 a3.63,3.63 0 0 1 3.63,3.63 v9.24 a3.63,3.63 0 0 1 -3.63,3.63 a3.63,3.63 0 0 1 -3.63,-3.63 v-9.24 a3.63,3.63 0 0 1 3.63,-3.63 Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M41.79,39.15 a3.63,3.63 0 0 1 3.63,3.63 v22.44 a3.63,3.63 0 0 1 -3.63,3.63 a3.63,3.63 0 0 1 -3.63,-3.63 v-22.44 a3.63,3.63 0 0 1 3.63,-3.63 Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,32.385 a3.63,3.63 0 0 1 3.63,3.63 v35.97 a3.63,3.63 0 0 1 -3.63,3.63 a3.63,3.63 0 0 1 -3.63,-3.63 v-35.97 a3.63,3.63 0 0 1 3.63,-3.63 Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M66.21,39.15 a3.63,3.63 0 0 1 3.63,3.63 v22.44 a3.63,3.63 0 0 1 -3.63,3.63 a3.63,3.63 0 0 1 -3.63,-3.63 v-22.44 a3.63,3.63 0 0 1 3.63,-3.63 Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M78.42,45.75 a3.63,3.63 0 0 1 3.63,3.63 v9.24 a3.63,3.63 0 0 1 -3.63,3.63 a3.63,3.63 0 0 1 -3.63,-3.63 v-9.24 a3.63,3.63 0 0 1 3.63,-3.63 Z" />
+</vector>

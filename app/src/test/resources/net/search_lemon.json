@@ -1,0 +1,158 @@
+{
+ "result": {
+  "songs": [
+   {
+    "album": {
+     "publishTime": 1520956800000,
+     "size": 3,
+     "artist": {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "",
+      "alias": [],
+      "id": 0,
+      "picId": 0
+     },
+     "copyrightId": 2706476,
+     "name": "Lemon",
+     "id": 37575103,
+     "picId": 109951166521931227,
+     "mark": 0,
+     "status": 1
+    },
+    "fee": 1,
+    "duration": 256000,
+    "rtype": 0,
+    "ftype": 0,
+    "artists": [
+     {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "米津玄師",
+      "alias": [],
+      "id": 159300,
+      "picId": 0
+     }
+    ],
+    "copyrightId": 2706476,
+    "transNames": [
+     "日剧《非自然死亡》主题曲"
+    ],
+    "mvid": 5841179,
+    "name": "Lemon",
+    "alias": [],
+    "id": 536622304,
+    "mark": 17180139520,
+    "status": -1
+   },
+   {
+    "album": {
+     "publishTime": 1549549027027,
+     "size": 22,
+     "artist": {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "",
+      "alias": [],
+      "id": 0,
+      "picId": 0
+     },
+     "copyrightId": 0,
+     "name": "把各种有名的流行歌曲（或纯音乐）改成大（小）调等各种调式会怎么样呢？",
+     "id": 75455261,
+     "picId": 109951163846210115,
+     "mark": 0,
+     "status": 1
+    },
+    "fee": 0,
+    "duration": 86778,
+    "rtype": 0,
+    "ftype": 0,
+    "artists": [
+     {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "米津玄師",
+      "alias": [],
+      "id": 0,
+      "picId": 0
+     }
+    ],
+    "copyrightId": 0,
+    "mvid": 0,
+    "name": "lemon（改大调）（翻自 米津玄師）",
+    "alias": [],
+    "id": 1344727797,
+    "mark": 131072,
+    "status": 0
+   },
+   {
+    "album": {
+     "publishTime": 1596556800000,
+     "size": 15,
+     "artist": {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "",
+      "alias": [],
+      "id": 0,
+      "picId": 0
+     },
+     "copyrightId": 2706476,
+     "name": "STRAY SHEEP",
+     "id": 93162249,
+     "picId": 109951166337048680,
+     "mark": 0,
+     "status": 1
+    },
+    "fee": 1,
+    "duration": 255883,
+    "rtype": 0,
+    "ftype": 0,
+    "artists": [
+     {
+      "img1v1Url": "https://p2.music.126.net/6y-UleORITEDbvrOLV0Q8A==/5639395138885805.jpg",
+      "musicSize": 0,
+      "albumSize": 0,
+      "img1v1": 0,
+      "name": "米津玄師",
+      "alias": [],
+      "id": 159300,
+      "picId": 0
+     }
+    ],
+    "copyrightId": 2706476,
+    "transNames": [
+     "日剧《非自然死亡》主题曲"
+    ],
+    "mvid": 5841179,
+    "name": "Lemon",
+    "alias": [
+     "日剧《非自然死亡》主题曲"
+    ],
+    "id": 1466598056,
+    "mark": 17180139520,
+    "status": -1
+   }
+  ],
+  "hasMore": true,
+  "songCount": 338
+ },
+ "code": 200,
+ "trp": {
+  "rules": [
+   "search_tab_song::1466598056::searchAlg$isGlobalQuality$1",
+   "search_tab_song::536622304::searchAlg$isGlobalQuality$1"
+  ]
+ }
+}

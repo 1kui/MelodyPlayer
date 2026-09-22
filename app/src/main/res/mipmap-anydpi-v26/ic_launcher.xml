@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标。monochrome 层供 Android 13+ 的「主题图标」使用。
+  它**不复用前景**：前景的五根条带 0.78/0.92/1 三档 alpha（那是设计的一部分，
+  在彩色图标上表现为层次），但主题图标要求的是纯粹的单色剪影，
+  系统重染时半透明会变成"颜色不匀"，看着像渲染坏了。
+  所以单独画一份 alpha 全为 1 的 ic_launcher_monochrome，几何与前景逐点一致。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

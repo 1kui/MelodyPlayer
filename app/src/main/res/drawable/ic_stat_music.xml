@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知栏小图标：与启动图标同一套脉冲竖条，但**按 24dp 重新配比例，不是缩放**。
+
+  直接缩放启动图标的话，每根条只有 1.24dp 宽、间距不到 1dp，在状态栏里会糊成一片。
+  这里重排过：条宽 2.2、间距 1.5（比例仍取自设计稿的 44:30），总宽 17、总高 14，
+  居中于 24dp 画布（四周留 3.5dp，符合状态栏图标的惯例）。
+
+  另有两处刻意的偏差：
+    · 最短那两根按原比例只有 5.3dp 高，在这个尺寸下会细到几乎看不见，抬到 6.0；
+    · **不写 android:tint** —— 通知图标由系统按所在表面的前景色重染
+      （状态栏深底染白、通知面板浅底染黑）。之前硬编码 tint 白色，
+      在浅色通知面板上就是"白图标贴白底"，看起来像图标错了/糊成一块。
+      fillColor 的值本身不重要，系统只取 alpha 通道。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:fillAlpha="0.78"
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.6,9 a1.1,1.1 0 0 1 1.1,1.1 v3.8 a1.1,1.1 0 0 1 -1.1,1.1 a1.1,1.1 0 0 1 -1.1,-1.1 v-3.8 a1.1,1.1 0 0 1 1.1,-1.1 Z" />
+
+    <path
+        android:fillAlpha="0.92"
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M8.3,7.05 a1.1,1.1 0 0 1 1.1,1.1 v7.7 a1.1,1.1 0 0 1 -1.1,1.1 a1.1,1.1 0 0 1 -1.1,-1.1 v-7.7 a1.1,1.1 0 0 1 1.1,-1.1 Z" />
+
+    <path
+        android:fillAlpha="0.92"
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,5 a1.1,1.1 0 0 1 1.1,1.1 v11.8 a1.1,1.1 0 0 1 -1.1,1.1 a1.1,1.1 0 0 1 -1.1,-1.1 v-11.8 a1.1,1.1 0 0 1 1.1,-1.1 Z" />
+
+    <path
+        android:fillAlpha="0.78"
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M15.7,7.05 a1.1,1.1 0 0 1 1.1,1.1 v7.7 a1.1,1.1 0 0 1 -1.1,1.1 a1.1,1.1 0 0 1 -1.1,-1.1 v-7.7 a1.1,1.1 0 0 1 1.1,-1.1 Z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M19.4,9 a1.1,1.1 0 0 1 1.1,1.1 v3.8 a1.1,1.1 0 0 1 -1.1,1.1 a1.1,1.1 0 0 1 -1.1,-1.1 v-3.8 a1.1,1.1 0 0 1 1.1,-1.1 Z" />
+</vector>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动图标背景：aurora 配色（青 → 蓝 → 紫）的对角渐变 + 左上角柔光。
+  全部为矢量，工程内不存在任何 PNG。
+
+  渐变角度与三个色标直接取自设计稿 logo-pulse-aurora.svg（x1=0.05,y1=0 → x2=0.95,y2=1，
+  色标 0.00/0.50/1.00），换算到 108 视口就是 (5.4,0) → (102.6,108)。
+  背景是**满幅**的：桌面遮罩（圆 / 方 / 水滴）由系统施加，这里不需要自己画 squircle ——
+  自己再画一层圆角反而会在方形遮罩下露出直角空隙。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="5.4"
+                android:startY="0"
+                android:endX="102.6"
+                android:endY="108">
+                <item android:offset="0" android:color="#FF00C2FF" />
+                <item android:offset="0.5" android:color="#FF2563FF" />
+                <item android:offset="1" android:color="#FF7C3AED" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!--
+      柔光。设计稿是 radialGradient cx=0.3 cy=0.2 r=0.85（objectBoundingBox），
+      换算：圆心 (32.4, 21.6)，半径 0.85×108 = 91.8。
+      作用只是让大色块不显死板，alpha 从 0.26 收到 0。
+    -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="32.4"
+                android:centerY="21.6"
+                android:gradientRadius="91.8">
+                <item android:offset="0" android:color="#42FFFFFF" />
+                <item android:offset="1" android:color="#00FFFFFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">旋律</string>
+    <string name="notification_channel_name">播放控制</string>
+    <!-- 渠道描述会直接显示在系统设置的通知列表里，说明为什么必须保持"重要"级别 -->
+    <string name="notification_channel_description">播放状态与锁屏控制，显示当前播放的歌曲、封面与播放/暂停按钮。</string>
+</resources>
