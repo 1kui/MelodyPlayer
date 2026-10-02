@@ -22,12 +22,14 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,14 +46,20 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.melody.player.core.Playlist
+import com.melody.player.core.Song
+import com.melody.player.core.SongQuery
 import com.melody.player.data.AudioLibrary
 import com.melody.player.ui.components.CoverCandidatesDialog
 import com.melody.player.ui.components.CoverSourceDialog
 import com.melody.player.ui.components.LocalArtworkShape
 import com.melody.player.ui.components.MelodySnackbarHost
 import com.melody.player.ui.components.MiniPlayer
+import com.melody.player.ui.components.PlaylistNameDialog
+import com.melody.player.ui.components.PlaylistPickerDialog
 import com.melody.player.ui.components.SongEditDialog
 import com.melody.player.ui.icons.MelodyIcons
+import com.melody.player.ui.player.PlayerUiState
 import com.melody.player.ui.player.PlayerViewModel
 import com.melody.player.ui.screens.LibraryContent
 import com.melody.player.ui.screens.LibraryTopBar
@@ -103,6 +111,9 @@ fun MelodyRoot(
 
     var tab by remember { mutableStateOf(MelodyTab.LIBRARY) }
     var playerOpen by remember { mutableStateOf(false) }
+    // 歌单的"新建 / 改名"共用一个命名对话框；删歌单要二次确认，所以单独一个待删对象
+    var pendingPlaylistName by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingPlaylistDelete by remember { mutableStateOf<Playlist?>(null) }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -139,11 +150,21 @@ fun MelodyRoot(
         if (uri != null) vm.importLyricsFile(uri)
     }
 
-    // 授权一个音乐文件夹：SAF 的目录树，授权跨重启保留，是 KWM 在新系统上最可靠的发现方式
+    // 授权一个音乐文件夹：SAF 的目录树，授权跨重启保留，
+    // 既用于 KWM 解密，也用于「曲库只扫描指定文件夹」
     val kwmFolderLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) vm.scanKwmFolder(uri, treeDisplayName(uri))
+    }
+
+    // 曲库要限定的那个文件夹。刻意用**另一个** launcher 而不是复用上面的：
+    // 复用的话，用户在设置里点「选择文件夹」会顺手把 KWM 的扫描目录也改了，
+    // 而这两个文件夹八竿子打不着。
+    val libraryFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) vm.pickLibraryFolder(uri, treeDisplayName(uri))
     }
 
     // 手动多选 .kwm。MIME 用 */* 是因为 .kwm 不在系统已知类型表里，
@@ -178,6 +199,11 @@ fun MelodyRoot(
         }
     }
 
+    // 返回键的优先级由**注册顺序**决定：后注册的先命中。
+    // 多选这条写在前面，是有意让位给播放页 —— 播放页全屏盖着时先关播放页，
+    // 否则用户会被迫先取消多选才能收起播放器，手感像是两层界面打架。
+    // 都不成立时（多选中、没开播放页）就命中下面这条，收起多选而不是退出 App。
+    BackHandler(enabled = state.selectionMode) { vm.clearSelection() }
     BackHandler(enabled = playerOpen) { playerOpen = false }
 
     // 封面形状是全局外观设置：用 CompositionLocal 往下传，而不是给四处 SongArtwork
@@ -198,7 +224,16 @@ fun MelodyRoot(
                             onSortChange = vm::setSort,
                             onImportAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
                             onRefresh = vm::refresh,
-                            scrollBehavior = scrollBehavior
+                            scrollBehavior = scrollBehavior,
+                            playlist = state.activePlaylist,
+                            onCreatePlaylist = { pendingPlaylistName = "" to "新建歌单" },
+                            onRenamePlaylist = { target ->
+                                pendingPlaylistName = target.name to "重命名歌单"
+                            },
+                            onDeletePlaylist = { target -> pendingPlaylistDelete = target },
+                            onPlayWholePlaylist = {
+                                state.activePlaylistId?.let { vm.playPlaylist(it, 0) }
+                            }
                         )
 
                         MelodyTab.QUEUE -> QueueTopBar(
@@ -227,7 +262,12 @@ fun MelodyRoot(
                             MelodyTab.entries.forEach { entry ->
                                 NavigationBarItem(
                                     selected = tab == entry,
-                                    onClick = { tab = entry },
+                                    onClick = {
+                                        tab = entry
+                                        // 多选只对曲库有意义，跑到别的标签还留着它
+                                        // 会让用户一进队列页就看到"已选 N 首"的残留状态
+                                        if (entry != MelodyTab.LIBRARY) vm.clearSelection()
+                                    },
                                     icon = {
                                         Icon(
                                             imageVector = entry.icon,
@@ -266,7 +306,32 @@ fun MelodyRoot(
                             onImportAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
                             onRestoreHidden = vm::clearHiddenSongs,
                             onFetchCover = vm::beginCoverPick,
-                            onEditSong = vm::beginEditSong
+                            onEditSong = vm::beginEditSong,
+                            onSelectPlaylist = vm::selectPlaylist,
+                            onCreatePlaylist = { pendingPlaylistName = "" to "新建歌单" },
+                            onAddToPlaylist = vm::beginAddToPlaylist,
+                            onRemoveFromPlaylist = { song ->
+                                state.activePlaylistId?.let { vm.removeSongFromPlaylist(it, song.key) }
+                            },
+                            onMovePlaylistSong = { index, delta ->
+                                state.activePlaylistId?.let { vm.movePlaylistSong(it, index, delta) }
+                            },
+                            // 歌单里点歌 = 从这一首开始放整个歌单（顺序就是歌单里的顺序）
+                            onPlaylistSongClick = { index ->
+                                state.activePlaylistId?.let { vm.playPlaylist(it, index) }
+                            },
+                            onToggleSelect = vm::toggleSelection,
+                            onBeginSelection = vm::beginSelection,
+                            // 全选只作用于当前视图看得见的那些：搜索时用户看到的就是这几行
+                            onToggleSelectAll = {
+                                vm.toggleSelectAll(libraryVisibleSongs(state))
+                            },
+                            onClearSelection = vm::clearSelection,
+                            onBatchAddToPlaylist = vm::beginBatchAddToPlaylist,
+                            onBatchRemoveFromPlaylist = vm::batchRemoveFromPlaylist,
+                            onBatchRemoveCovers = vm::batchRemoveCovers,
+                            onBatchHideSongs = vm::batchHideSongs,
+                            onBatchEmbedTags = vm::batchEmbedTags
                         )
 
                         MelodyTab.QUEUE -> QueueContent(
@@ -274,7 +339,8 @@ fun MelodyRoot(
                             positionMs = position,
                             contentPadding = bottomPadding,
                             onPlayIndex = { index -> vm.playAll(state.queue, index) },
-                            onRemoveIndex = vm::removeFromQueue
+                            onRemoveIndex = vm::removeFromQueue,
+                            onMoveIndex = vm::moveInQueue
                         )
 
                         MelodyTab.SETTINGS -> SettingsContent(
@@ -318,6 +384,9 @@ fun MelodyRoot(
                             onCoverMinScoreChange = vm::setCoverMinScore,
                             onCoverRegionCustomChange = vm::setCoverRegionCustom,
                             onToggleCoverRegion = vm::toggleCoverRegion,
+                            onLibraryFolderOnlyChange = vm::setLibraryFolderOnly,
+                            onPickLibraryFolder = { libraryFolderLauncher.launch(null) },
+                            onClearLibraryFolder = vm::clearLibraryFolder,
                             contentPadding = bottomPadding
                         )
                     }
@@ -401,6 +470,76 @@ fun MelodyRoot(
                 )
             }
 
+            // 批量「加入歌单」：挑的是一整批，标题要说清是几首
+            if (state.batchPlaylistTargetKeys.isNotEmpty()) {
+                PlaylistPickerDialog(
+                    playlists = state.playlists,
+                    header = "已选 ${state.batchPlaylistTargetKeys.size} 首",
+                    createTitle = "新建歌单并加入这 ${state.batchPlaylistTargetKeys.size} 首",
+                    // 批量时只要"有一部分在里面"就打勾，不逐首算：这一列要给的是
+                    // "加进去会多几首"的直觉提示，不是精确账本（精确账本在完成后的汇报里）
+                    alreadyIn = { item ->
+                        item.songKeys.any { it in state.batchPlaylistTargetKeys }
+                    },
+                    onPick = { vm.batchAddToPlaylist(it.id) },
+                    onCreateAndAdd = { name -> vm.createPlaylistThenBatchAdd(name) },
+                    onDismiss = vm::dismissBatchAddToPlaylist
+                )
+            }
+
+            // 歌单：命名（新建 / 改名）、挑目标（加入歌单）、删歌单二次确认
+            pendingPlaylistName?.let { (initial, title) ->
+                PlaylistNameDialog(
+                    title = title,
+                    initialName = initial,
+                    confirmLabel = if (initial.isEmpty()) "创建" else "保存",
+                    onConfirm = { name ->
+                        pendingPlaylistName = null
+                        if (initial.isEmpty()) vm.createPlaylist(name)
+                        else state.activePlaylistId?.let { vm.renamePlaylist(it, name) }
+                    },
+                    onDismiss = { pendingPlaylistName = null }
+                )
+            }
+
+            state.playlistAddTarget?.let { song ->
+                PlaylistPickerDialog(
+                    song = song,
+                    playlists = state.playlists,
+                    onPick = { target -> vm.addSongToPlaylist(song, target.id) },
+                    onCreateAndAdd = { name ->
+                        val id = vm.createPlaylist(name)
+                        if (id != null) vm.addSongToPlaylist(song, id)
+                    },
+                    onDismiss = vm::dismissAddToPlaylist
+                )
+            }
+
+            pendingPlaylistDelete?.let { target ->
+                AlertDialog(
+                    onDismissRequest = { pendingPlaylistDelete = null },
+                    title = { Text("删除歌单「${target.name}」？") },
+                    text = {
+                        Text(
+                            "歌单里的 ${target.songKeys.size} 首会从歌单中移除。\n" +
+                                "歌曲本身不会被删除，曲库、隐藏状态、归档都不受影响 —— " +
+                                "随时可以重新建一个歌单再把它们加回去。"
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                pendingPlaylistDelete = null
+                                vm.deletePlaylist(target.id)
+                            }
+                        ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingPlaylistDelete = null }) { Text("保留") }
+                    }
+                )
+            }
+
             // 提示条是全局唯一的，但必须画在**最上层**：挂在 Scaffold 的 snackbarHost 上时，
             // 全屏播放页那层浮层会把它整个盖住 —— 用户在播放页点「获取封面」，
             // 提示却压在播放页底下，只有退回主界面才看见，像是提示跑错了页面。
@@ -437,3 +576,18 @@ private val SNACKBAR_GAP = 14.dp
  * 抬 170dp 让它落在进度条以上，谁也不挡 —— 这里不是留白，是那几秒里唯一不闹事的位置。
  */
 private val PLAYER_SNACKBAR_LIFT = 170.dp
+
+/**
+ * 曲库页当前**渲染**的那份列表。
+ *
+ * 批量「全选」只能用这一份：用户看到的是哪几行，认为自己选的就是哪几首。
+ * 歌单视图要按歌单自己的顺序（不能再套一次曲库排序，否则手排的顺序会被打乱），
+ * 其余情况就是曲库排序 + 搜索的结果。必须与 `LibraryContent` 内部那份保持一致。
+ */
+private fun libraryVisibleSongs(state: PlayerUiState): List<Song> =
+    if (state.isPlaylistView) {
+        if (state.query.isBlank()) state.playlistSongs
+        else SongQuery.filter(state.playlistSongs, state.query)
+    } else {
+        state.filtered
+    }

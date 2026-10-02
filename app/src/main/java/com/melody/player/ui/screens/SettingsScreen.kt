@@ -70,11 +70,13 @@ import com.melody.player.core.kwm.KwmFiles
 import com.melody.player.core.online.CoverRegion
 import com.melody.player.core.online.ITunesApi
 import com.melody.player.core.online.LyricProvider
+import com.melody.player.ui.AboutInfo
 import com.melody.player.ui.components.IconAction
 import com.melody.player.ui.components.SectionCard
 import com.melody.player.ui.components.SettingRow
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
+import com.melody.player.ui.rememberAboutActions
 import com.melody.player.ui.theme.AccentTheme
 import com.melody.player.ui.theme.ThemeMode
 import java.text.SimpleDateFormat
@@ -209,6 +211,9 @@ fun SettingsContent(
     onCoverMinScoreChange: (Int) -> Unit,
     onCoverRegionCustomChange: (Boolean) -> Unit,
     onToggleCoverRegion: (CoverRegion) -> Unit,
+    onLibraryFolderOnlyChange: (Boolean) -> Unit,
+    onPickLibraryFolder: () -> Unit,
+    onClearLibraryFolder: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
@@ -218,6 +223,7 @@ fun SettingsContent(
     var pendingDeleteLyricGroup by remember { mutableStateOf<LyricCopyGroup?>(null) }
     var pendingUnarchive by remember { mutableStateOf<ArchivedEntry?>(null) }
     var confirmClearLyrics by remember { mutableStateOf(false) }
+    val aboutActions = rememberAboutActions()
 
     // 折叠状态：默认都收起，点标题行才展开。整页本来就长，列表默认铺开很难受
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -470,6 +476,41 @@ fun SettingsContent(
                         modifier = Modifier.weight(1f)
                     )
                 }
+                RowDivider()
+                SettingRow(
+                    icon = MelodyIcons.Folder,
+                    title = "只扫描指定文件夹",
+                    subtitle = state.libraryFolderName?.let { "当前限定：$it" }
+                        ?: "开启后曲库里只有那个文件夹里的歌；关掉则扫描整机"
+                ) {
+                    Switch(
+                        checked = state.libraryFolderOnly,
+                        onCheckedChange = onLibraryFolderOnlyChange
+                    )
+                }
+                RowDivider()
+                ActionRow {
+                    ChipButton(
+                        text = if (state.libraryFolderName == null) "选择文件夹" else "换一个文件夹",
+                        icon = MelodyIcons.Folder,
+                        onClick = onPickLibraryFolder
+                    )
+                    ChipButton(
+                        text = "取消限定",
+                        icon = MelodyIcons.Close,
+                        onClick = onClearLibraryFolder,
+                        enabled = state.libraryFolderOnly || state.libraryFolderName != null
+                    )
+                }
+                FoldableHelp(
+                    label = "限定文件夹是怎么扫的",
+                    text = "开启后不再读取整机媒体库，只用系统文件选择器授权的那一个文件夹（连子目录一起），" +
+                        "所以不需要「音乐和音频」权限，只有这一个目录的读取权。\n" +
+                        "逐个文件读取标签会比整机扫描慢一些（大曲库可能要走十几秒），" +
+                        "扫描过程中曲库页会显示已经找到多少首。\n" +
+                        "手动导入的文件和归档到 App 音乐库的副本不受这个开关影响，它们始终在曲库里。" +
+                        "文件夹授权可以被系统在设置里撤销，真被撤销时这里会提示并自动退回整机扫描。"
+                )
             }
         }
 
@@ -1293,13 +1334,27 @@ fun SettingsContent(
                     title = "版本 ${BuildConfig.VERSION_NAME}",
                     subtitle = "本地音乐播放器 · 构建号 ${BuildConfig.VERSION_CODE}"
                 )
+                RowDivider()
+                SettingRow(
+                    icon = MelodyIcons.Group,
+                    title = "加入 QQ 群",
+                    subtitle = "${AboutInfo.QQ_GROUP} · 交流用法、反馈问题、提需求",
+                    onClick = aboutActions.onJoinGroup
+                )
+                SettingRow(
+                    icon = MelodyIcons.Code,
+                    title = "开源仓库",
+                    subtitle = AboutInfo.REPO_URL.removePrefix("https://"),
+                    onClick = aboutActions.onOpenRepo
+                )
                 Text(
                     text = "界面基于 Jetpack Compose + Material 3。所有图标均由代码绘制的矢量路径" +
                         "生成（ImageVector 路径指令与矢量 drawable），工程内不含任何位图资源。\n" +
                         "在线歌词与封面只发送歌名、歌手用于检索，不会上传任何本地文件；" +
                         "KWM 解密全程在本机完成，不联网、不上传。\n" +
                         "解密出来的音频按原格式（MP3 / FLAC / OGG 等）直接归档，不做二次转码 —— " +
-                        "因此 APK 里不含任何音频编码器。",
+                        "因此 APK 里不含任何音频编码器。\n" +
+                        "这是个自用工具，不承诺商业级维护；用得有问题欢迎到 QQ 群或仓库提 issue。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = CardPad, vertical = 12.dp)
@@ -1953,11 +2008,13 @@ private fun ChipButton(
     text: String,
     icon: ImageVector,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     FilterChip(
         selected = false,
         onClick = onClick,
+        enabled = enabled,
         label = { Text(text) },
         modifier = modifier,
         leadingIcon = {

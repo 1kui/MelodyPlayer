@@ -7,9 +7,11 @@ import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
+import com.melody.player.core.AudioFiles
 import com.melody.player.core.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -160,10 +162,103 @@ class AudioLibrary(private val context: Context) {
         }
     }
 
+    /** 让「限定扫描文件夹」的目录树授权在重启后依然有效。 */
+    fun takePersistableTreePermission(treeUri: Uri) {
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                treeUri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+    }
+
+    /** 目录树授权是否还在（用户可能通过系统设置撤销了）。 */
+    fun hasTreePermission(treeUri: Uri): Boolean =
+        runCatching {
+            context.contentResolver.persistedUriPermissions.any {
+                it.uri == treeUri && it.isReadPermission
+            }
+        }.getOrDefault(false)
+
+    /**
+     * 只扫用户指定的那一个文件夹（SAF 目录树），递归到子目录。
+     *
+     * 为什么不用 MediaStore 过滤而是整棵树自己走：MediaStore 的 `DATA` 列
+     * 在 Android 10 之后被收紧，路径经常读不到，按前缀筛会**静悄悄地扫不全** ——
+     * 用户看到的是"我的歌怎么少了一半"，而界面上没有任何地方能解释这件事。
+     * 走目录树是唯一能确定"就是这一个文件夹里的东西"的做法。
+     *
+     * 代价是每个文件都要开一次 [MediaMetadataRetriever] 读标签，比查一次数据库慢得多；
+     * 但限定文件夹本身就是用户挑过的小集合，这个代价可以接受。
+     */
+    suspend fun scanTreeAudio(treeUri: Uri, onProgress: (Int) -> Unit = {}): List<Song> =
+        withContext(Dispatchers.IO) {
+            val resolver = context.contentResolver
+            val songs = ArrayList<Song>()
+            // 目录树理论上可能成环（软链接 / 提供器实现异常），记一遍走过的 docId
+            val visited = HashSet<String>()
+
+            fun walk(parentDocId: String, depth: Int) {
+                if (depth > MAX_TREE_DEPTH) return
+                if (!visited.add(parentDocId)) return
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+                val cursor = runCatching {
+                    resolver.query(
+                        childrenUri,
+                        TREE_PROJECTION,
+                        null,
+                        null,
+                        null
+                    )
+                }.getOrNull() ?: return
+
+                cursor.use { c ->
+                    val idCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    if (idCol < 0) return@use
+
+                    while (c.moveToNext()) {
+                        val docId = c.getString(idCol) ?: continue
+                        val name = (if (nameCol >= 0) c.getString(nameCol) else null).orEmpty()
+                        val mime = if (mimeCol >= 0) c.getString(mimeCol) else null
+                        val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+
+                        if (isDir) {
+                            if (!AudioFiles.shouldSkipDirectory(name)) walk(docId, depth + 1)
+                            continue
+                        }
+                        if (!AudioFiles.isAudio(mime, name)) continue
+
+                        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                        // 读不出就跳过这一首，绝不让一个坏文件把整次扫描带崩
+                        val song = runCatching { inspectSafUri(docUri) }.getOrNull() ?: continue
+                        // 与 MediaStore 扫描同一把尺：1~1.5 秒的是提示音不是歌
+                        if (song.durationMs in 1..1500L) continue
+                        songs.add(song)
+                        onProgress(songs.size)
+                    }
+                }
+            }
+
+            val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+            if (rootId != null) walk(rootId, 0)
+            songs
+        }
+
     private fun android.database.Cursor.stringOr(index: Int): String? =
         if (index >= 0 && !isNull(index)) getString(index) else null
 
     companion object {
+        /** 目录树扫描最多下钻多少层。够用了，且能挡住提供器返回的异常深结构。 */
+        private const val MAX_TREE_DEPTH = 12
+
+        private val TREE_PROJECTION = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+
         /** API 33 起用 READ_MEDIA_AUDIO，之前用 READ_EXTERNAL_STORAGE。 */
         fun requiredPermission(): String =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

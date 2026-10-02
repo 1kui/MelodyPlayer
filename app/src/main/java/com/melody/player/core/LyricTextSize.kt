@@ -15,13 +15,6 @@ enum class LyricTextSize(val label: String, val scale: Float) {
     LARGE("大", 1.18f),
     XLARGE("特大", 1.38f);
 
-    /** 已经是最小 / 最大挡了。界面上据此把 A− / A＋ 变淡，而不是点了没反应。 */
-    val isSmallest: Boolean get() = ordinal == 0
-    val isLargest: Boolean get() = ordinal == entries.size - 1
-
-    /** 往大（delta > 0）或往小走一挡，到端点就停在端点。 */
-    fun step(delta: Int): LyricTextSize = entries[(ordinal + delta).coerceIn(0, entries.size - 1)]
-
     companion object {
         fun fromKey(key: String?): LyricTextSize = entries.firstOrNull { it.name == key } ?: STANDARD
     }

@@ -74,7 +74,8 @@ fun QueueContent(
     contentPadding: PaddingValues,
     onPlayIndex: (Int) -> Unit,
     onRemoveIndex: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onMoveIndex: (Int, Int) -> Unit = { _, _ -> }
 ) {
     if (state.queue.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -184,7 +185,19 @@ fun QueueContent(
                 isPlaying = state.isPlaying,
                 onClick = { onPlayIndex(index) },
                 onPlayNext = { onPlayIndex(index) },
-                onRemove = { onRemoveIndex(index) }
+                onRemove = { onRemoveIndex(index) },
+                // 队列顺序即播放顺序，所以在这里也能改；到两端时菜单项直接不出现，
+                // 而不是留一个点了没反应还弹提示的按钮
+                onMoveUp = if (index > 0) {
+                    { onMoveIndex(index, index - 1) }
+                } else {
+                    null
+                },
+                onMoveDown = if (index < state.queue.lastIndex) {
+                    { onMoveIndex(index, index + 1) }
+                } else {
+                    null
+                }
             )
         }
     }

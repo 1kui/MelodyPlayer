@@ -9,6 +9,8 @@ import com.melody.player.core.LyricCopyGroup
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.Lyrics
 import com.melody.player.core.PlayMode
+import com.melody.player.core.Playlist
+import com.melody.player.core.Playlists
 import com.melody.player.core.Song
 import com.melody.player.core.SortMode
 import com.melody.player.core.kwm.KwmFile
@@ -35,12 +37,67 @@ data class PlayerUiState(
     /** 隐藏记录里、设备上已经找不到的那些 key（文件被删了），设置页会如实标注。 */
     val hiddenMissingKeys: Set<String> = emptySet(),
     val loading: Boolean = false,
+    /** 扫描过程中的进度文案。目录树扫描要逐个读标签，比查数据库慢得多，得让用户知道在动。 */
+    val scanLabel: String = "",
     val permissionGranted: Boolean = false,
-    /** 是否至少成功扫描过一次，用于区分「还没扫描」和「扫描完确实没有音乐」。 */
-    val everScanned: Boolean = false,
     val query: String = "",
     val searchActive: Boolean = false,
     val sort: SortMode = SortMode.TITLE,
+
+    // ------------------------------------------------------------ 自定义歌单
+
+    /** 用户自建的全部歌单，新建排在最前。 */
+    val playlists: List<Playlist> = emptyList(),
+    /** 曲库页当前正在查看哪个歌单；null = 看整库。 */
+    val activePlaylistId: String? = null,
+    /** 「加入歌单」正在为哪首歌选目标；非空时界面弹出歌单选择列表。 */
+    val playlistAddTarget: Song? = null,
+
+    // ---------------------------------------------------------------- 批量选择
+
+    /**
+     * 当前选中的曲目 key 集合。空集 = 不在多选模式。
+     *
+     * 存 key 而不是下标：批量操作跑完会刷新列表（排序、搜索、歌单一改都可能让
+     * 行号整体移位），存下标的话"用户选中的那 5 首"会在刷新后变成另外 5 首。
+     * 刷新时残留的 key（已隐藏/已从歌单移除的）由 [pruneSelection] 清掉。
+     */
+    val selection: Set<String> = emptySet(),
+
+    /** 批量动作正在执行（加歌单 / 去封面…），界面据此禁用重复点击。 */
+    val batchWorking: Boolean = false,
+
+    /** 批量动作的进度文案（正在处理第几首 / 叫什么）。 */
+    val batchLabel: String = "",
+
+    /**
+     * 批量「嵌入标签」正在为哪些歌选要写什么；非空时界面弹出选择框。
+     *
+     * 分成"写歌词 / 写封面"两个勾选项而不是一个开关：多数用户只想固化其中一样，
+     * 一次全勾上会写出一堆自己并不想要的结果。
+     */
+    val batchEmbedTargetKeys: Set<String> = emptySet(),
+
+    /**
+     * 批量「加入歌单」正在为哪些歌选目标；非空时界面弹出歌单选择列表。
+     *
+     * 与 [playlistAddTarget] 分开是因为后者是单曲、这个是一批，
+     * 混成一个字段会让"当前到底在为几首选歌单"这件事说不清。
+     */
+    val batchPlaylistTargetKeys: Set<String> = emptySet(),
+
+    // -------------------------------------------------- 曲库只扫描指定文件夹
+
+    /**
+     * 是否**只**扫描用户指定的那个文件夹。
+     *
+     * 开着时不需要读取音频权限 —— 目录树授权已经够了。所以曲库页那个
+     * 「需要访问本地音乐」的引导页此时不该出现（见 [permissionGranted]）。
+     */
+    val libraryFolderOnly: Boolean = false,
+    /** 被限定扫描的那个文件夹的显示名。 */
+    val libraryFolderName: String? = null,
+
     /** 当前播放队列（点歌时会把当时的列表整体作为队列）。 */
     val queue: List<Song> = emptyList(),
     val currentSong: Song? = null,
@@ -188,6 +245,28 @@ data class PlayerUiState(
     val hasLibrary: Boolean get() = songs.isNotEmpty()
 
     val isQueueEmpty: Boolean get() = queue.isEmpty()
+
+    /** 是否处于批量选择模式（选中了至少一首）。 */
+    val selectionMode: Boolean get() = selection.isNotEmpty()
+
+    val selectedCount: Int get() = selection.size
+
+    /**
+     * 曲库页是不是正看着某个歌单（而不是整库）。 */
+    val isPlaylistView: Boolean get() = activePlaylistId != null
+
+    /** 当前查看的歌单；id 对不上（歌单刚被删）时为 null，界面自动退回整库。 */
+    val activePlaylist: Playlist?
+        get() = playlists.firstOrNull { it.id == activePlaylistId }
+
+    /**
+     * 当前歌单解析出来的曲目，**保持歌单里的顺序**。
+     *
+     * 歌单视图下曲库页渲染的就是它，不走 [filtered] —— 曲库那个全局排序
+     * （按标题/按时长…）在这里必须让位，否则用户手排的播放顺序一打开就被打乱。
+     */
+    val playlistSongs: List<Song>
+        get() = activePlaylist?.let { Playlists.resolve(it, songs) } ?: emptyList()
 
     /** 归档进度 0f~1f；总数未知时返回 0，界面据此显示不确定进度条。 */
     val archiveProgress: Float

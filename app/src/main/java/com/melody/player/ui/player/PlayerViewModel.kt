@@ -17,6 +17,7 @@ import androidx.media3.session.SessionToken
 import com.melody.player.core.ArchivedEntry
 import com.melody.player.core.ArchivedSongs
 import com.melody.player.core.ArtworkShape
+import com.melody.player.core.BatchOps
 import com.melody.player.core.BrandArtwork
 import com.melody.player.core.HiddenSongs
 import com.melody.player.core.LyricCopyEntry
@@ -27,6 +28,8 @@ import com.melody.player.core.LyricOrigin
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.Lyrics
 import com.melody.player.core.PlayMode
+import com.melody.player.core.Playlist
+import com.melody.player.core.Playlists
 import com.melody.player.core.Song
 import com.melody.player.core.SongEdit
 import com.melody.player.core.SongEdits
@@ -45,11 +48,13 @@ import com.melody.player.data.ArchivedLibrary
 import com.melody.player.data.AudioLibrary
 import com.melody.player.data.CoverResult
 import com.melody.player.data.CoverStage
+import com.melody.player.data.EmbeddedArtworkCache
 import com.melody.player.data.KwmImporter
 import com.melody.player.data.KwmScanner
 import com.melody.player.data.LyricsRepository
 import com.melody.player.data.LyricsStore
 import com.melody.player.data.Prefs
+import com.melody.player.data.TagEmbedder
 import com.melody.player.playback.PlaybackService
 import com.melody.player.ui.components.notifyCoverChanged
 import kotlinx.coroutines.Dispatchers
@@ -83,6 +88,8 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
     private val kwmScanner = KwmScanner(app)
     private val kwmImporter = KwmImporter(app, archived, prefs)
     private val covers = AlbumArt.of(app)
+    private val embedder = TagEmbedder(app)
+private val embeddedArt = EmbeddedArtworkCache.of(app)
 
     /** 用户改过的歌曲信息（歌名/歌手/专辑），内存留一份，改名直接改这条。 */
     private var songEdits: Map<String, SongEdit> = prefs.songEdits
@@ -104,7 +111,10 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
             coverCount = covers.stats().first,
             coverBytes = covers.stats().second,
             permissionGranted = library.hasAudioPermission(),
-            kwmFolderName = prefs.kwmFolderName
+            kwmFolderName = prefs.kwmFolderName,
+            playlists = prefs.playlists,
+            libraryFolderOnly = prefs.libraryFolderOnly && prefs.libraryFolderUri != null,
+            libraryFolderName = prefs.libraryFolderName
         )
     )
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
@@ -148,6 +158,14 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
      * 副本一旦不在（被删/目录读不到）就自动失效，原曲立刻回到列表。
      */
     private var supersededKeys: Set<String> = emptySet()
+
+    /**
+     * 已经交给播放器的曲目，按 key 记一份。
+     *
+     * 有了它，[deriveQueue] 才能在「曲库还没扫出来」的那一瞬间也认得出队列里的每一首；
+     * 没有它的话，冷启动到首次扫描完成之间，队列会被推成 null 而退化成空列表。
+     */
+    private val songCache = LinkedHashMap<String, Song>()
 
     /** 播放进度单独一条流，250ms 更新一次，只有进度条会因此重组。 */
     private val _position = MutableStateFlow(0L)
@@ -305,6 +323,7 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         if (songs.isEmpty()) return
         val index = songs.indexOfFirst { it.key == prefs.lastSongKey }.takeIf { it >= 0 } ?: 0
         val song = songs[index]
+        songs.forEach { songCache[it.key] = it }
         c.setMediaItems(songs.map(::mediaItemOf), index, 0L)
         c.prepare()
         _state.update {
@@ -321,16 +340,53 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         ensureCover(song)
     }
 
+    /**
+     * 从控制器时间线反推出队列（null = 推不出来，沿用旧值）。
+     *
+     * 队列**不再由 App 自己维护一份**。以前两边各记一份、靠事件对齐，出了两类说不通的现象：
+     *
+     *  1. 随机播放时，播放器放的是打乱后的顺序，界面列的却是原始顺序 ——
+     *     「正在播放」高亮的那一行和实际听到的那首对不上；
+     *  2. 从队列里删掉当前曲目前面的某一首，播放器下标已经往前挪了，界面还停在旧下标上，
+     *     高亮整个错位，要等下一次切歌才自己对上。
+     *
+     * 控制器的 `mediaId` 就是 [Song.key]（见 `mediaItemOf`），所以反推是可靠的。
+     * 只有一条 id 认不出来（曲库还没扫出来、或刚被删）才放弃推导 —— 那时宁可保留
+     * 旧列表，也不要塞一个点开就播不了的假条目进去。
+     */
+    private fun deriveQueue(c: MediaController): List<Song>? {
+        val lookup = songLookup()
+        val out = ArrayList<Song>(c.mediaItemCount)
+        for (i in 0 until c.mediaItemCount) {
+            val song = lookup[c.getMediaItemAt(i).mediaId] ?: return null
+            out.add(song)
+        }
+        return out
+    }
+
+    /**
+     * key → 曲目。曲库里的版本优先（歌名/歌手被改过时要用新的），
+     * 曲库还没扫出来时退回已经知道的那些，别让正在播的歌凭空消失。
+     */
+    private fun songLookup(): Map<String, Song> {
+        val map = LinkedHashMap<String, Song>()
+        _state.value.queue.forEach { map[it.key] = it }
+        allSongs.forEach { map[it.key] = it }
+        songCache.forEach { (key, song) -> map.putIfAbsent(key, song) }
+        return map
+    }
+
     private fun syncFromController() {
         val c = controller ?: return
         val index = c.currentMediaItemIndex
-        val queue = _state.value.queue
+        val queue = deriveQueue(c) ?: _state.value.queue
         val song = queue.getOrNull(index)
         val previousKey = _state.value.currentSong?.key
         val duration = if (c.duration > 0L) c.duration else (song?.durationMs ?: 0L)
 
         _state.update {
             it.copy(
+                queue = queue,
                 currentIndex = index,
                 currentSong = song ?: it.currentSong,
                 isPlaying = c.isPlaying,
@@ -355,13 +411,37 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         if (_state.value.loading) return
         viewModelScope.launch {
             _state.update { it.copy(loading = true) }
-            if (!library.hasAudioPermission()) {
+
+            // 限定文件夹模式下**不需要读取音频权限**：目录树授权已经够读那一个文件夹了。
+            // 这里仍然拿媒体库权限当门槛的话，用户明明只想听 MP3 目录，却要先交出整机权限。
+            val folderUri = prefs.libraryFolderUri?.takeIf { prefs.libraryFolderOnly }?.let(Uri::parse)
+            val folderOnly = folderUri != null
+
+            if (!folderOnly && !library.hasAudioPermission()) {
                 _state.update {
                     it.copy(loading = false, permissionGranted = false, songs = emptyList(), filtered = emptyList())
                 }
                 return@launch
             }
-            val device = runCatching { library.scanDevice() }.getOrDefault(emptyList())
+
+            val device = when {
+                folderOnly -> {
+                    // 授权可能在系统设置里被撤销过，只看偏好里的 URI 字符串是不够的
+                    if (!library.hasTreePermission(folderUri!!)) {
+                        _messages.tryEmit("文件夹授权已失效，请重新选择")
+                        prefs.libraryFolderOnly = false
+                        _state.update { it.copy(libraryFolderOnly = false) }
+                        runCatching { library.scanDevice() }.getOrDefault(emptyList())
+                    } else {
+                        _state.update { it.copy(scanLabel = "正在扫描「${prefs.libraryFolderName ?: "所选文件夹"}」…") }
+                        runCatching { library.scanTreeAudio(folderUri) { found ->
+                            _state.update { it.copy(scanLabel = "已在所选文件夹里找到 $found 首…") }
+                        } }.getOrDefault(emptyList())
+                    }
+                }
+
+                else -> runCatching { library.scanDevice() }.getOrDefault(emptyList())
+            }
             val imported = runCatching { library.loadImported(prefs.importedAudioUris) }.getOrDefault(emptyList())
             val archivedSongs = syncArchived()
             // 副本真的在手上，来源曲目才让位；副本丢了就让原曲回到列表，绝不留下空库
@@ -375,8 +455,10 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
             _state.update {
                 it.copy(
                     loading = false,
+                    // 限定文件夹模式下也算"有权限"：否则曲库页会一直停在「需要访问本地音乐」
                     permissionGranted = true,
-                    everScanned = true,
+                    scanLabel = "",
+                    playlists = prefs.playlists,
                     archivedCount = prefs.archivedSongs.size,
                     archivedBytes = archived.totalBytes()
                 )
@@ -435,11 +517,20 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         }
         _state.update { current ->
             val visible = HiddenSongs.visible(allSongs, hidden).filterNot { it.key in supersededKeys }
+            val filtered = SongQuery.apply(visible, current.query, current.sort)
             current.copy(
                 songs = visible,
-                filtered = SongQuery.apply(visible, current.query, current.sort),
+                filtered = filtered,
                 hiddenSongs = hidden,
-                hiddenMissingKeys = missing
+                hiddenMissingKeys = missing,
+                // 曲库一变（隐藏、归档让位、重新扫描）就顺手把选中收敛一遍：
+                // 这里是所有会改曲库的操作的收口，不在这里做的话每个调用点都得自己记得，
+                // 漏一个就会出现"已选 N 首"里混着几首列表上已经看不见的歌
+                selection = if (current.selection.isEmpty()) {
+                    emptySet()
+                } else {
+                    BatchOps.pruneSelection(current.selection, filtered.mapTo(HashSet()) { it.key })
+                }
             )
         }
     }
@@ -449,8 +540,26 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         if (granted) refresh() else _messages.tryEmit("没有读取权限，无法扫描本地音乐")
     }
 
+    /**
+     * 搜索词变化。
+     *
+     * 多选时会把**搜不到的选中项丢掉**：搜索框每敲一个字都会走这里，不收敛的话
+     * 搜"周杰伦"之后操作条还顶着"已选 5 首"，而其中 3 首已经不在结果里 ——
+     * 用户点批量操作，作用对象和他在屏幕上看到的完全对不上。
+     */
     fun setQuery(query: String) {
-        _state.update { it.copy(query = query, filtered = SongQuery.apply(it.songs, query, it.sort)) }
+        _state.update { state ->
+            val filtered = SongQuery.apply(state.songs, query, state.sort)
+            state.copy(
+                query = query,
+                filtered = filtered,
+                selection = if (state.selection.isEmpty()) {
+                    emptySet()
+                } else {
+                    BatchOps.pruneSelection(state.selection, filtered.mapTo(HashSet()) { it.key })
+                }
+            )
+        }
     }
 
     fun setSearchActive(active: Boolean) {
@@ -519,6 +628,543 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         _messages.tryEmit("已恢复全部 $count 首")
     }
 
+    // ------------------------------------------------------------------ 自定义歌单
+
+    private fun persistPlaylists(next: List<Playlist>) {
+        prefs.playlists = next
+        _state.update { it.copy(playlists = next) }
+    }
+
+    /** 改一个歌单；[block] 返回同一个实例表示"没改动"，那就不写盘也不刷新界面。 */
+    private fun mutatePlaylist(id: String, block: (Playlist) -> Playlist) {
+        val current = prefs.playlists
+        val target = current.firstOrNull { it.id == id } ?: return
+        val updated = block(target)
+        if (updated === target) return
+        persistPlaylists(current.map { if (it.id == id) updated else it })
+    }
+
+    /**
+     * 归档 / 取消归档会换掉这首歌的 key（`ms:<id>` ↔ `lib:<文件名>`），而歌单里存的正是 key。
+     *
+     * 不跟着换的话，这首歌会在用户眼皮底下**从歌单里消失** —— 文件明明还在、也还能播，
+     * 歌单里就是少了一行，而且界面上没有任何地方解释为什么。
+     * 用 [LinkedHashSet] 去重：万一目标 key 已经在歌单里，不能因此多出一行重复。
+     */
+    private fun remapPlaylistKeys(from: String, to: String) {
+        val current = prefs.playlists
+        if (current.isEmpty() || from == to) return
+        var changed = false
+        val next = current.map { playlist ->
+            if (from !in playlist.songKeys) return@map playlist
+            changed = true
+            val mapped = LinkedHashSet<String>()
+            playlist.songKeys.forEach { key -> mapped += if (key == from) to else key }
+            playlist.copy(songKeys = mapped.toList())
+        }
+        if (changed) persistPlaylists(next)
+    }
+
+    /**
+     * 新建歌单，返回它的 id（界面据此切过去）。
+     *
+     * 建完就切到新歌单：用户下一步一定是往里加歌，站在一个空歌单上等他操作最自然。
+     */
+    fun createPlaylist(name: String): String? {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val next = Playlists.create(prefs.playlists, name, "pl:$nowSec", nowSec)
+        persistPlaylists(next)
+        val created = next.first()
+        _state.update { it.copy(activePlaylistId = created.id) }
+        _messages.tryEmit("已新建「${created.name}」")
+        return created.id
+    }
+
+    /**
+     * 批量「加入歌单」时现场新建一个歌单，并把当前选中的都放进去。
+     *
+     * 走的是 [createPlaylistThenNoSwitch] 而不是 [createPlaylist]：批量时用户正站在
+     * 原来的列表上挑歌，弹窗一关就跳进一个空歌单，等于把刚选好的这批甩掉了。
+     */
+    fun createPlaylistThenBatchAdd(name: String) {
+        val id = createPlaylistThenNoSwitch(name) ?: return
+        batchAddToPlaylist(id)
+    }
+
+    /** 新建歌单但不切视图，返回它的 id。 */
+    private fun createPlaylistThenNoSwitch(name: String): String? {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val next = Playlists.create(prefs.playlists, name, "pl:$nowSec", nowSec)
+        persistPlaylists(next)
+        return next.first().id
+    }
+
+    fun renamePlaylist(id: String, name: String) {        val current = prefs.playlists
+        val before = current.firstOrNull { it.id == id } ?: return
+        val next = Playlists.rename(current, id, name)
+        if (next === current) {
+            _messages.tryEmit("名字不能为空，也不能和别的歌单重名")
+            return
+        }
+        persistPlaylists(next)
+        _messages.tryEmit("已改名为「${next.first { it.id == id }.name}」")
+    }
+
+    fun deletePlaylist(id: String) {
+        val target = prefs.playlists.firstOrNull { it.id == id } ?: return
+        persistPlaylists(Playlists.delete(prefs.playlists, id))
+        // 正在看的歌单被删了就退回整库，否则曲库页会停在一个什么都不显示的视图上
+        if (_state.value.activePlaylistId == id) {
+            _state.update { it.copy(activePlaylistId = null) }
+        }
+        _messages.tryEmit("已删除歌单「${target.name}」")
+    }
+
+    /**
+     * 切换正在看的歌单（或回到整库）。
+     *
+     * **顺手清掉多选**：选中是"在这份列表里选中的"，切了视图就是另一份列表了。
+     * 不清的话操作条会顶着"已选 5 首"作用到一个新视图里一首都看不见的集合上 ——
+     * 用户点的每一个批量操作都会得到"没有可处理的曲目"。
+     */
+    fun selectPlaylist(id: String?) {
+        _state.update {
+            it.copy(
+                activePlaylistId = id,
+                query = "",
+                searchActive = false,
+                selection = emptySet()
+            )
+        }
+    }
+
+    /** 「加入歌单」的选择列表：给哪首歌挑目标。 */
+    fun beginAddToPlaylist(song: Song) {
+        _state.update { it.copy(playlistAddTarget = song) }
+    }
+
+    fun dismissAddToPlaylist() {
+        _state.update { it.copy(playlistAddTarget = null) }
+    }
+
+    fun addSongToPlaylist(song: Song, playlistId: String) {
+        val before = prefs.playlists.firstOrNull { it.id == playlistId }
+        if (before == null) {
+            dismissAddToPlaylist()
+            return
+        }
+        val already = song.key in before.songKeys
+        mutatePlaylist(playlistId) { Playlists.addSongs(it, listOf(song.key)) }
+        dismissAddToPlaylist()
+        _messages.tryEmit(
+            if (already) "「${song.title}」已经在「${before.name}」里了"
+            else "已加入「${before.name}」"
+        )
+    }
+
+    /** 从歌单里移除（只动歌单，不动曲库，也不隐藏这首）。 */
+    fun removeSongFromPlaylist(playlistId: String, key: String) {
+        mutatePlaylist(playlistId) { Playlists.removeSong(it, key) }
+        _messages.tryEmit("已从歌单移除")
+    }
+
+    /** 歌单内上移（[delta] = -1）/ 下移（+1）。到边界时什么都不做，也不动界面。 */
+    fun movePlaylistSong(playlistId: String, index: Int, delta: Int) {
+        mutatePlaylist(playlistId) { playlist ->
+            if (delta < 0) Playlists.moveUp(playlist, index) else Playlists.moveDown(playlist, index)
+        }
+    }
+
+    /** 播放整个歌单：队列就是歌单里排好的顺序，从 [startIndex] 那首开始。 */
+    fun playPlaylist(playlistId: String, startIndex: Int) {
+        val playlist = prefs.playlists.firstOrNull { it.id == playlistId } ?: return
+        val songs = Playlists.resolve(playlist, _state.value.songs)
+        if (songs.isEmpty()) {
+            _messages.tryEmit("「${playlist.name}」里还没有可播放的曲目")
+            return
+        }
+        playAll(songs, startIndex.coerceIn(0, songs.lastIndex))
+    }
+
+    // ------------------------------------------------------------------ 批量选择
+
+    /**
+     * 进多选模式：以 [song] 为第一首。
+     *
+     * 从长按菜单进多选时用这个 —— 用户已经明确指着某一首了，直接把它选中，
+     * 接着就能一路点下去，比"进了多选还要再点一次它"少一步也不容易空手退出。
+     */
+    fun beginSelection(song: Song) {
+        _state.update { it.copy(selection = setOf(song.key)) }
+    }
+
+    fun toggleSelection(song: Song) {
+        _state.update { state ->
+            val next = if (song.key in state.selection) {
+                state.selection - song.key
+            } else {
+                state.selection + song.key
+            }
+            // 取消到一首不剩时自动退出多选：留一个"已选 0 首"的空界面只会让人不知道下一步该点哪
+            if (next.isEmpty()) state.copy(selection = emptySet()) else state.copy(selection = next)
+        }
+    }
+
+    fun clearSelection() {
+        _state.update { it.copy(selection = emptySet(), batchLabel = "") }
+    }
+
+    /**
+     * 全选 / 取消全选，按当前列表的实际可见项。
+     *
+     * 全选只选**眼前能看见的**：搜索「周杰伦」时按全选，选的是这 5 首而不是整库 ——
+     * 用户看到的是这 5 行，认为自己选的就是这 5 首。
+     */
+    fun toggleSelectAll(visible: List<Song>) {
+        if (visible.isEmpty()) return
+        _state.update { state ->
+            if (BatchOps.selectAllTogglesOff(state.selectedCount, visible.size)) {
+                state.copy(selection = emptySet())
+            } else {
+                state.copy(selection = visible.mapTo(LinkedHashSet()) { it.key })
+            }
+        }
+    }
+
+    /**
+     * 批量动作跑完之后清掉已经不成立的选中项，并收掉进度态。
+     *
+     * 隐藏、从歌单移除这类操作会让被处理的曲目从当前视图里消失，而选中集合里还留着
+     * 它们 —— 界面上的"已选 N 首"和操作条真正会作用的对象就对不上了。
+     * [visible] 传**当前视图可见**的曲目；传空集合表示"没有视图概念"（例如从设置页触发的批量），
+     * 此时不清选择。
+     */
+    private fun finishBatch(visible: List<Song>, message: String) {
+        _state.update { state ->
+            val next = if (visible.isEmpty()) {
+                emptySet()
+            } else {
+                BatchOps.pruneSelection(state.selection, visible.mapTo(HashSet()) { it.key })
+            }
+            state.copy(selection = next, batchWorking = false, batchLabel = "")
+        }
+        _messages.tryEmit(message)
+    }
+
+    // -------------------------------------------------- 批量：加入歌单 / 移出
+
+    /** 批量「加入歌单」：弹出歌单选择，作用对象是当前选中的全部曲目。 */
+    fun beginBatchAddToPlaylist() {
+        val keys = _state.value.selection
+        if (keys.isEmpty()) return
+        _state.update { it.copy(batchPlaylistTargetKeys = keys) }
+    }
+
+    fun dismissBatchAddToPlaylist() {
+        _state.update { it.copy(batchPlaylistTargetKeys = emptySet()) }
+    }
+
+    /**
+     * 把当前选中的曲目全部加进 [playlistId]。
+     *
+     * 汇报里必须说清"已经在里面的有几首"：用户选了 10 首、只有 3 首是新加的，
+     * 只报"已加入 3 首"会让他怀疑另外 7 首去哪了。
+     */
+    fun batchAddToPlaylist(playlistId: String) {
+        val selected = _state.value.selection.toList()
+        dismissBatchAddToPlaylist()
+        if (selected.isEmpty()) return
+        val playlist = prefs.playlists.firstOrNull { it.id == playlistId } ?: run {
+            _messages.tryEmit("歌单已不存在")
+            return
+        }
+        val (fresh, already) = BatchOps.splitForPlaylistAdd(selected, playlist)
+        val added = BatchOps.addedCount(playlist, fresh)
+        if (fresh.isNotEmpty()) {
+            mutatePlaylist(playlistId) { Playlists.addSongs(it, fresh) }
+        }
+        // 汇报用的 key 取实际写进去的那几首：addedCount 已按去重后的结果算，
+        // 数量与 key 列表必须一致，否则 [BatchOps.accountedCount] 的对账就失去意义
+        val groups = buildList {
+            if (added > 0) add(BatchOps.Group.Done(fresh.take(added)))
+            if (already.isNotEmpty()) add(BatchOps.Group.Unchanged(already))
+        }
+        val message = BatchOps.summary(groups, "加入歌单")
+        finishBatch(currentlyVisible(), message)
+    }
+
+    /** 批量从当前歌单移除。 */
+    fun batchRemoveFromPlaylist() {
+        val playlistId = _state.value.activePlaylistId ?: return
+        val selected = _state.value.selection.toList()
+        if (selected.isEmpty()) return
+        val playlist = prefs.playlists.firstOrNull { it.id == playlistId } ?: return
+        val present = playlist.songKeys.toHashSet()
+        val (removing, absent) = selected.partition { it in present }
+        if (removing.isNotEmpty()) {
+            val drop = removing.toHashSet()
+            mutatePlaylist(playlistId) { target ->
+                target.copy(songKeys = target.songKeys.filterNot { it in drop })
+            }
+        }
+        val groups = buildList {
+            if (removing.isNotEmpty()) add(BatchOps.Group.Done(removing))
+            if (absent.isNotEmpty()) add(BatchOps.Group.Absent(absent))
+        }
+        finishBatch(currentlyVisible(), BatchOps.summary(groups, "从歌单移除"))
+    }
+
+    // ---------------------------------------------------------- 批量：隐藏 / 恢复
+
+    fun batchHideSongs() {
+        val selected = _state.value.selection.toList()
+        if (selected.isEmpty()) return
+        val hidden = prefs.hiddenSongs.mapTo(HashSet()) { it.key }
+        val byKey = allSongs.associateBy { it.key }
+        val (changing, already) = BatchOps.splitForHidden(selected, hidden::contains, toHidden = true)
+        // 分开记账：曲库里找不到的（文件刚被别的 App 删了）不能混进成功里
+        val hiddenKeys = LinkedHashSet<String>()
+        val missing = LinkedHashSet<String>()
+        var entry = prefs.hiddenSongs
+        changing.forEach { key ->
+            val song = byKey[key]
+            if (song == null) {
+                missing.add(key)
+            } else {
+                entry = HiddenSongs.add(entry, song)
+                hiddenKeys.add(key)
+            }
+        }
+        if (entry !== prefs.hiddenSongs) {
+            prefs.hiddenSongs = entry
+            applyLibrary()
+        }
+        val groups = buildList {
+            if (hiddenKeys.isNotEmpty()) add(BatchOps.Group.Done(hiddenKeys.toList()))
+            if (missing.isNotEmpty()) add(BatchOps.Group.Failed(missing.toList(), "曲目已不在曲库"))
+            if (already.isNotEmpty()) add(BatchOps.Group.Unchanged(already))
+        }
+        finishBatch(currentlyVisible(), BatchOps.summary(groups, "隐藏"))
+    }
+
+    // -------------------------------------------------------- 批量：封面相关
+
+    /**
+     * 批量「去除封面」。
+     *
+     * 这里删的**只是 App 这一层**：联网缓存的和用户从相册设的自定义封面。
+     * 音频文件里内嵌的封面删不动、也不会被动 —— 汇报与确认框都按这个说法写，
+     * 不让用户以为整首歌变回灰图。
+     */
+    fun batchRemoveCovers() {
+        val selected = _state.value.selection.toList()
+        if (selected.isEmpty()) return
+        // 判据必须是 `matched`，和单曲的「移除封面」保持一致：
+        // 搜不到时也会记一条**负结果**（trackId = 0），那个不等于"App 存了这张封面"，
+        // 用 `entry != null` 判的话这类歌会被算成可删，删完什么都没发生还报一次成功。
+        val (removable, nothing) = BatchOps.splitForCoverRemoval(selected) {
+            covers.entry(it)?.matched == true
+        }
+        val byKey = allSongs.associateBy { it.key }
+        val done = LinkedHashSet<String>()
+        val missing = LinkedHashSet<String>()
+        val failed = LinkedHashSet<String>()
+        viewModelScope.launch {
+            _state.update { it.copy(batchWorking = true, batchLabel = "正在去除封面…") }
+            removable.forEach { key ->
+                val song = byKey[key]
+                if (song == null) {
+                    // 文件在选中的那一刻还在、动手前被删了（别的清理工具干的）
+                    missing.add(key)
+                    return@forEach
+                }
+                val ok = runCatching { covers.remove(song) }.getOrDefault(false)
+                if (ok) {
+                    done.add(key)
+                    // 删完立刻把这首在队列里的条目刷一遍，否则等它被切到时通知栏还是旧封面
+                    republishSong(song)
+                } else {
+                    failed.add(key)
+                }
+            }
+            // 通知封面变化**必须无条件发**，不能只顾当前播放的那首。
+            // 界面靠 coverRevision 这一个信号触发所有行的重组（见 notifyCoverChanged）：
+            // 之前只在"当前播放曲目被去掉了封面"时才发，于是批量去掉其它歌的封面后，
+            // 那些行的 rememberCover 不会重跑，继续画着内存里那张旧图 ——
+            // 表现就是"提示成功了但图还在，重进App 才刷新"。
+            if (done.isNotEmpty()) notifyCoverChanged()
+            refreshCoverStats()
+            val groups = buildList {
+                if (done.isNotEmpty()) add(BatchOps.Group.Done(done.toList()))
+                if (failed.isNotEmpty()) add(BatchOps.Group.Failed(failed.toList(), "文件被占用或权限失效"))
+                if (missing.isNotEmpty()) add(BatchOps.Group.Failed(missing.toList(), "曲目已不在曲库"))
+                if (nothing.isNotEmpty()) add(BatchOps.Group.Unchanged(nothing))
+            }
+            finishBatch(
+                visible = currentlyVisible(),
+                message = BatchOps.summary(groups, "去除封面", unit = "张")
+            )
+        }
+    }
+
+    // ------------------------------------------------------ 批量：嵌入标签
+
+    /** 批量「嵌入标签」：先让用户选要写什么，再动手。 */
+    fun beginBatchEmbed() {
+        val keys = _state.value.selection
+        if (keys.isEmpty()) return
+        _state.update { it.copy(batchEmbedTargetKeys = keys) }
+    }
+
+    fun dismissBatchEmbed() {
+        _state.update { it.copy(batchEmbedTargetKeys = emptySet()) }
+    }
+
+    /**
+     * 把选中的曲目的歌词 / 封面写进音频文件。
+     *
+     * 汇报必须区分四种结果而不是只报"成功"：文件不支持写、没权限、写失败、
+     * 没有内容可写 —— 它们的处理建议完全不同（换格式 / 重新授权 / 重试 / 换个歌）。
+     * 只报成功的话，用户会以为都写进去了，直到换台播放器才发现文件根本没变。
+     */
+    fun batchEmbedTags(writeLyrics: Boolean, writeArtwork: Boolean) {
+        val keys = _state.value.batchEmbedTargetKeys.ifEmpty { _state.value.selection }.toList()
+        dismissBatchEmbed()
+        if (keys.isEmpty()) return
+        if (!writeLyrics && !writeArtwork) {
+            _messages.tryEmit("至少要选一项：写歌词或写封面")
+            return
+        }
+
+        val byKey = allSongs.associateBy { it.key }
+        viewModelScope.launch {
+            _state.update { it.copy(batchWorking = true, batchLabel = "正在写入文件…") }
+            val done = ArrayList<String>()
+            val refused = LinkedHashSet<String>()
+            val failed = LinkedHashSet<String>()
+            val nothing = LinkedHashSet<String>()
+            val missing = LinkedHashSet<String>()
+            val doneContainers = LinkedHashSet<String>()
+
+            for ((index, key) in keys.withIndex()) {
+                val song = byKey[key]
+                if (song == null) {
+                    missing.add(key)
+                    continue
+                }
+                _state.update {
+                    it.copy(batchLabel = "正在写入 ${index + 1}/${keys.size}：${song.title}")
+                }
+
+                // 歌词取「当前这一首实际在用的那份」，而不是重新去联网匹配 ——
+                // 用户看到界面上的词就是要写进文件的词，重新匹配可能给出另一份。
+                val lyricsText = if (writeLyrics) {
+                    lyricsRepository.lyricTextFor(song, song.durationMs)
+                } else {
+                    null
+                }
+                // 封面取 App 这一层已存的；没有就不写，绝不拿占位图去覆盖文件里的真封面
+                val artwork = if (writeArtwork) covers.artworkData(song.key) else null
+
+                if ((writeLyrics && lyricsText.isNullOrBlank()) && (writeArtwork && artwork == null)) {
+                    nothing.add(key)
+                    continue
+                }
+
+                when (val outcome = embedder.embed(song, lyricsText, artwork)) {
+                    is TagEmbedder.Outcome.Done -> {
+                        done.add(key)
+                        doneContainers.add(outcome.container)
+                    }
+                    is TagEmbedder.Outcome.Refused -> refused.add(key)
+                    is TagEmbedder.Outcome.Failed -> failed.add(key)
+                }
+            }
+
+            // 写进文件之后，媒体库那边的内嵌封面/歌词可能变了：
+            // 重新扫一遍让曲库显示跟上文件的新状态
+            if (done.isNotEmpty()) {
+                // 文件里的封面可能刚被换掉，缓存里还留着旧字节 —— 必须先丢掉再通知刷新，
+                // 否则重组后 rememberCover 从缓存拿到的还是改之前那张
+                if (writeArtwork) embeddedArt.evict(done)
+                notifyCoverChanged()
+                refresh()
+            }
+
+            val groups = buildList {
+                if (done.isNotEmpty()) add(BatchOps.Group.Done(done))
+                if (refused.isNotEmpty()) add(BatchOps.Group.Failed(refused.toList(), "格式或来源不支持写入"))
+                if (failed.isNotEmpty()) add(BatchOps.Group.Failed(failed.toList(), "写入失败，文件未改动"))
+                if (missing.isNotEmpty()) add(BatchOps.Group.Failed(missing.toList(), "曲目已不在曲库"))
+                if (nothing.isNotEmpty()) add(BatchOps.Group.Unchanged(nothing.toList()))
+            }
+            val tail = if (doneContainers.isNotEmpty()) {
+                "（${doneContainers.joinToString(" / ")}）"
+            } else {
+                ""
+            }
+            finishBatch(
+                visible = currentlyVisible(),
+                message = BatchOps.summary(groups, "写入") + tail
+            )
+        }
+    }
+
+    /**
+     * 当前视图里实际可见的曲目。
+     *
+     * 歌单视图走歌单自己的顺序与搜索结果，其余走曲库的排序+搜索结果 ——
+     * 和 [LibraryContent] 渲染的那份列表保持一致，否则清完选择会留下"看不见但还选着"的项。
+     */
+    private fun currentlyVisible(): List<Song> {
+        val state = _state.value
+        return if (state.isPlaylistView) {
+            if (state.query.isBlank()) state.playlistSongs
+            else SongQuery.filter(state.playlistSongs, state.query)
+        } else {
+            state.filtered
+        }
+    }
+
+    // ------------------------------------------------------ 曲库只扫描指定文件夹
+
+    /**
+     * 记住用户选的目录树并立刻切过去。
+     *
+     * 授权要**当场**取持久化权限：只在偏好里记下 URI 是不够的，
+     * 冷启动时系统并不会因为偏好里有这个字符串就把权限还给你。
+     */
+    fun pickLibraryFolder(treeUri: Uri, displayName: String?) {
+        library.takePersistableTreePermission(treeUri)
+        prefs.libraryFolderUri = treeUri.toString()
+        prefs.libraryFolderName = displayName ?: "所选文件夹"
+        prefs.libraryFolderOnly = true
+        _state.update {
+            it.copy(libraryFolderOnly = true, libraryFolderName = prefs.libraryFolderName)
+        }
+        _messages.tryEmit("曲库已限定为「${prefs.libraryFolderName}」")
+        refresh()
+    }
+
+    fun setLibraryFolderOnly(enabled: Boolean) {
+        if (enabled && prefs.libraryFolderUri == null) {
+            _messages.tryEmit("先选一个音乐文件夹，才能限定扫描范围")
+            return
+        }
+        prefs.libraryFolderOnly = enabled
+        _state.update { it.copy(libraryFolderOnly = enabled) }
+        refresh()
+    }
+
+    fun clearLibraryFolder() {
+        prefs.libraryFolderOnly = false
+        prefs.libraryFolderUri = null
+        prefs.libraryFolderName = null
+        _state.update { it.copy(libraryFolderOnly = false, libraryFolderName = null) }
+        _messages.tryEmit("已恢复为扫描整机音乐")
+        refresh()
+    }
+
     // ------------------------------------------------------------------ App 音乐库（归档）
 
     /**
@@ -576,7 +1222,12 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
                 // 每成功一首就落盘：中途被系统杀掉也不会留下「有文件没记录」的垃圾
                 prefs.archivedSongs = listOf(entry) + prefs.archivedSongs
                 // 归档不等于隐藏：这里只记「来源是谁」，原曲由 supersededKeys 在列表里让位
-                if (!song.archived) supersededKeys = supersededKeys + song.key
+                if (!song.archived) {
+                    supersededKeys = supersededKeys + song.key
+                    // 副本的 key 变了，歌单里指向原曲的那一条必须跟着换，
+                    // 否则这首歌会在用户眼皮底下从歌单里消失，而文件明明还在
+                    remapPlaylistKeys(song.key, "lib:${entry.name}")
+                }
                 // 归档副本自己也要有歌词：M4A/Ogg/WAV 写不进内嵌标签，靠私有副本兜住
                 lyricsText?.let {
                     lyricsStore.save(
@@ -656,6 +1307,8 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
                 // refresh() 里还会重算一遍；这里先减掉，是因为 refresh 正在跑时会被开头的
                 // 「loading」判断挡掉，不补这一下，这一行要等到下次扫描才回来
                 supersededKeys = supersededKeys - key
+                // 副本没了，原曲那一行会回来，歌单里也要指回原曲
+                remapPlaylistKeys("lib:${entry.name}", key)
             }
             _messages.tryEmit("已取消「${entry.title}」的归档，原文件仍在曲库里")
             refresh()
@@ -1055,6 +1708,7 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
     fun playAll(songs: List<Song>, startIndex: Int) {
         if (songs.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, songs.lastIndex)
+        songs.forEach { songCache[it.key] = it }
         withController { c ->
             c.setMediaItems(songs.map(::mediaItemOf), safeIndex, 0L)
             c.prepare()
@@ -1114,24 +1768,6 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
         _position.value = target
     }
 
-    /** 快进/快退。到边界时给出提示，不让按钮变成「没反应的按钮」。 */
-    fun seekBy(deltaMs: Long) {
-        val max = _state.value.durationMs
-        val current = controller?.currentPosition ?: _position.value
-        if (deltaMs > 0 && max > 0 && current >= max - 400L) {
-            _messages.tryEmit("已到结尾")
-            return
-        }
-        if (deltaMs < 0 && current <= 400L) {
-            _messages.tryEmit("已到开头")
-            return
-        }
-        val target = if (max > 0) (current + deltaMs).coerceIn(0L, max) else (current + deltaMs).coerceAtLeast(0L)
-        withController { it.seekTo(target) }
-        _position.value = target
-        _messages.tryEmit(if (deltaMs > 0) "快进 ${deltaMs / 1000} 秒" else "快退 ${-deltaMs / 1000} 秒")
-    }
-
     /**
      * 切换播放模式：顺序播放 → 列表循环 → 单曲循环 → 随机播放 → 回到顺序。
      *
@@ -1149,6 +1785,7 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
 
     /** 把一首歌插到当前曲目之后。 */
     fun playNext(song: Song) {
+        songCache[song.key] = song
         withController { c ->
             val index = c.currentMediaItemIndex
             if (index >= 0 && index + 1 <= c.mediaItemCount) {
@@ -1156,12 +1793,10 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
             } else {
                 c.addMediaItem(mediaItemOf(song))
             }
-            // 同步队列视图，保证队列页与真实播放器一致
-            val queue = _state.value.queue.toMutableList()
-            val insertAt = (_state.value.currentIndex + 1).coerceIn(0, queue.size)
-            queue.add(insertAt, song)
-            _state.update { it.copy(queue = queue) }
         }
+        // 队列由控制器时间线反推，这里不再自己往列表里插 —— 两份列表各插一次
+        // 迟早会错位（随机播放时插进去的下标根本不是"下一首"在界面上的位置）
+        syncFromController()
         _messages.tryEmit("已添加到下一首播放")
     }
 
@@ -1174,8 +1809,30 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
             val mediaIndex = (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).mediaId == song.key }
             if (mediaIndex != null) c.removeMediaItem(mediaIndex)
         }
+        // 本地先挪一次让界面立刻跟上，然后从控制器重新对齐下标：
+        // 删掉当前曲目前面的某一首时，播放器的下标已经往前挪了，不重算就会整片高亮错位
         _state.update { it.copy(queue = queue.toMutableList().also { q -> q.removeAt(index) }) }
+        syncFromController()
         _messages.tryEmit("已从队列移除「${song.title}」")
+    }
+
+    /**
+     * 把队列里的某一首挪到另一个位置（队列页的「上移 / 下移」）。
+     *
+     * 下标能直接用，是因为队列就是控制器的时间线（见 [deriveQueue]）。
+     * Media3 的 `moveMediaItem` 与 Kotlin 的 `removeAt` + `add(to, …)` 语义一致：
+     * 都是先摘出来再插到 `to`。
+     */
+    fun moveInQueue(from: Int, to: Int) {
+        val queue = _state.value.queue
+        if (from == to || from !in queue.indices || to !in queue.indices) return
+        withController { c ->
+            if (from < c.mediaItemCount && to < c.mediaItemCount) c.moveMediaItem(from, to)
+        }
+        _state.update {
+            it.copy(queue = queue.toMutableList().apply { add(to, removeAt(from)) })
+        }
+        syncFromController()
     }
 
     fun clearQueue() {
@@ -1183,6 +1840,7 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
             c.stop()
             c.clearMediaItems()
         }
+        songCache.clear()
         _state.update { it.copy(queue = emptyList(), currentIndex = -1, currentSong = null, isPlaying = false) }
         _position.value = 0L
     }
@@ -1348,8 +2006,6 @@ class PlayerViewModel(private val app: Application) : ViewModel() {
     }
 
     /** 歌词字号走一挡（delta 只取 +1 / -1）。到端点就停住，界面据此把按钮变淡。 */
-    fun stepLyricTextSize(delta: Int) = setLyricTextSize(_state.value.lyricTextSize.step(delta))
-
     fun setLyricTextSize(size: LyricTextSize) {
         if (_state.value.lyricTextSize == size) return
         prefs.lyricTextSize = size

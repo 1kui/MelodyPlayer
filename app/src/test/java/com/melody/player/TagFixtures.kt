@@ -188,6 +188,117 @@ internal object TagFixtures {
         return id3Tag(major = 4, frames = id3Frame24("TIT2", payload))
     }
 
+    /**
+     * APIC 帧载荷：[0]=encoding [1..]=MIME\0 [图片类型 1B] [描述符\0] 图片数据。
+     *
+     * 描述符用 encoding 对应的终止符收尾 —— latin1 与 UTF-16 的终止符宽度不同，
+     * 这里必须跟着encoding 变，否则解析器会在描述符里读出一个假的 MIME 结尾。
+     */
+    fun apicPayload(
+        mime: String,
+        image: ByteArray,
+        type: Int = 3,
+        descriptor: String = "",
+        encoding: Int = ENC_LATIN1
+    ): ByteArray {
+        val b = Bytes()
+        b.u8(encoding)
+        b.ascii(mime)
+        b.u8(0) // MIME 的终止符
+        b.u8(type) // 图片类型，1 字节
+        when (encoding) {
+            // APIC 的描述符**没有** v2.3 文本帧那种 2 字节长度前缀，
+            // 直接是「按 encoding 编码的字符串 + 终止符」。
+            // UTF-16 的终止符是两字节 0x00 0x00 —— 解析器若按单字节截断，
+            // 会把半个图片字节当成描述符的一部分，图片整体错位。
+            ENC_UTF16_BOM -> {
+                b.u8(0xFF).u8(0xFE)
+                b.raw(descriptor.toByteArray(Charsets.UTF_16LE))
+                b.u8(0).u8(0)
+            }
+
+            ENC_UTF8 -> {
+                b.raw(descriptor.toByteArray(Charsets.UTF_8))
+                b.u8(0)
+            }
+
+            else -> {
+                b.raw(descriptor.toByteArray(Charsets.ISO_8859_1))
+                b.u8(0)
+            }
+        }
+        b.raw(image)
+        return b.toByteArray()
+    }
+
+    /** 一个没有任何标签的裸 MPEG 音频：帧同步字 + 若干帧数据。 */
+    fun mpegAudioFrames(): ByteArray {
+        val b = Bytes()
+        // 两帧 0xFF 0xFB（MP3，MPEG1 Layer3）
+        repeat(2) {
+            b.u8(0xFF).u8(0xFB).u8(0x90).u8(0x00)
+            b.raw(ByteArray(64) { 0x55 })
+        }
+        return b.toByteArray()
+    }
+
+    /** 带 APIC 正面封面的 ID3v2.3 标签。 */
+    fun id3v2Apic(image: ByteArray, mime: String = "image/jpeg"): ByteArray =
+        id3Tag(major = 3, frames = id3Frame("APIC", apicPayload(mime, image)))
+
+    /** v2.2 的 PIC：帧 id 只有 3 字符，MIME 也是 3 字符（"JPG"）。 */
+    fun id3v22Pic(image: ByteArray, mime3: String = "JPG"): ByteArray {
+        val payload = apicPayload(mime3, image, type = 3)
+        // v2.2 帧头：id(3) + size(3) + 无 flags
+        val b = Bytes()
+        b.ascii("PIC").u24be(payload.size).raw(payload)
+        val frameBytes = b.toByteArray()
+        val tag = Bytes()
+        tag.ascii("ID3").u8(2).u8(0).u8(0).syncSafe(frameBytes.size).raw(frameBytes)
+        return tag.toByteArray()
+    }
+
+    /** 多张 APIC：第一张是背面（type=4），第二张才是正面（type=3）。 */
+    fun id3v2ApicBackThenFront(back: ByteArray, front: ByteArray): ByteArray {
+        val b = Bytes()
+        b.raw(id3Frame("APIC", apicPayload("image/jpeg", back, type = 4)))
+        b.raw(id3Frame("APIC", apicPayload("image/jpeg", front, type = 3)))
+        return id3Tag(major = 3, frames = b.toByteArray())
+    }
+
+    /** 只有一张非正面封面（type=0）的标签。 */
+    fun id3v2ApicOnlyOther(back: ByteArray): ByteArray =
+        id3Tag(major = 3, frames = id3Frame("APIC", apicPayload("image/jpeg", back, type = 0)))
+
+    /** FLAC：STREAMINFO + PICTURE 块。 */
+    fun flacWithPicture(image: ByteArray, mime: String = "image/jpeg"): ByteArray {
+        val b = Bytes()
+        b.ascii("fLaC")
+        b.u8(0x00).u24be(34).raw(ByteArray(34))
+        val picture = flacPicturePayload(image, mime)
+        b.u8(0x80.toInt() or 6) // 最后一颗块 + 类型 6 = PICTURE
+        b.u24be(picture.size)
+        b.raw(picture)
+        return b.toByteArray()
+    }
+
+    /** FLAC PICTURE 块载荷（不含 4 字节块头）。 */
+    fun flacPicturePayload(image: ByteArray, mime: String = "image/jpeg"): ByteArray {
+        val mimeBytes = mime.toByteArray(Charsets.US_ASCII)
+        val b = Bytes()
+        b.u32be(3L) // 图片类型 3 = 正面
+        b.u32be(mimeBytes.size.toLong())
+        b.raw(mimeBytes)
+        b.u32be(0L) // 描述长度 0
+        b.u32be(500L) // 宽
+        b.u32be(500L) // 高
+        b.u32be(24L) // 色深
+        b.u32be(0L) // 索引色数
+        b.u32be(image.size.toLong())
+        b.raw(image)
+        return b.toByteArray()
+    }
+
     private fun id3Tag(major: Int, frames: ByteArray): ByteArray {
         val b = Bytes()
         b.ascii("ID3")

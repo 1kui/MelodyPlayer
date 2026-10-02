@@ -177,18 +177,25 @@ fun SectionCard(
     }
 }
 
-/** 设置项行：左侧图标 + 标题/副标题，右侧可放自定义内容。 */
+/**
+ * 设置项行：左侧图标 + 标题/副标题，右侧可放自定义内容。
+ *
+ * [onClick] 非空时整行可点。没给 onClick 的行保持原来的纯展示形态 ——
+ * 这一类行占多数，逐个判断"该不该可点"比给每一行都写 onClick = {} 更不容易漏。
+ */
 @Composable
 fun SettingRow(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
     modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

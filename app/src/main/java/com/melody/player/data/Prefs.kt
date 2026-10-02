@@ -9,6 +9,7 @@ import com.melody.player.core.HiddenSongEntry
 import com.melody.player.core.LyricOrigin
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.PlayMode
+import com.melody.player.core.Playlist
 import com.melody.player.core.SongEdit
 import com.melody.player.core.SortMode
 import com.melody.player.core.online.CoverRegion
@@ -273,6 +274,42 @@ class Prefs(context: Context) {
         get() = decodeArchived(sp.getString(KEY_ARCHIVED, null))
         set(value) = sp.edit().putString(KEY_ARCHIVED, encodeArchived(value)).apply()
 
+    /**
+     * 用户自建歌单，**新建的排在最前**。
+     *
+     * 只存曲目的 [com.melody.player.core.Song.key]（见 [com.melody.player.core.Playlist]），
+     * 顺序即播放顺序。这里不再排一次序：和歌单里的手排顺序较劲，
+     * 用户会看到"我排好的歌单一打开就变了"。
+     */
+    var playlists: List<Playlist>
+        get() = decodePlaylists(sp.getString(KEY_PLAYLISTS, null))
+        set(value) = sp.edit().putString(KEY_PLAYLISTS, encodePlaylists(value)).apply()
+
+    /**
+     * 是否**只**扫描用户指定的那个文件夹。
+     *
+     * 默认关：绝大多数人就是想听整机里的歌，一上来就限定文件夹反而扫不到东西。
+     */
+    var libraryFolderOnly: Boolean
+        get() = sp.getBoolean(KEY_LIB_FOLDER_ONLY, false)
+        set(value) = sp.edit().putBoolean(KEY_LIB_FOLDER_ONLY, value).apply()
+
+    /**
+     * 用户授权的曲库目录树 URI。
+     *
+     * 目录树授权能跨重启保留，但要记下 URI 才能在下次冷启动直接复用；
+     * **授权随时可能被用户在系统设置里撤销**，所以真正开扫前还要复查一次（见
+     * [AudioLibrary.hasTreePermission]），不能只看这个字符串在不在。
+     */
+    var libraryFolderUri: String?
+        get() = sp.getString(KEY_LIB_FOLDER_URI, null)
+        set(value) = sp.edit().putString(KEY_LIB_FOLDER_URI, value).apply()
+
+    /** 用户给这个文件夹起的显示名（SAF 给不出好看的路径，只能自己记）。 */
+    var libraryFolderName: String?
+        get() = sp.getString(KEY_LIB_FOLDER_NAME, null)
+        set(value) = sp.edit().putString(KEY_LIB_FOLDER_NAME, value).apply()
+
     /** 是否已经成功扫描过至少一次（用于区分「首次进入」与「真的没有音乐」）。 */
     var hasScannedOnce: Boolean
         get() = sp.getBoolean(KEY_SCANNED, false)
@@ -434,6 +471,44 @@ class Prefs(context: Context) {
         return arr.toString()
     }
 
+    private fun decodePlaylists(raw: String?): List<Playlist> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                // id 是歌单的地址，改名/加歌都靠它定位；缺 id 的记录直接丢，
+                // 留着的话界面上会出现一个点不动也删不掉的条目
+                val id = obj.optString("i").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val name = obj.optString("n").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val keys = obj.optJSONArray("k") ?: JSONArray()
+                Playlist(
+                    id = id,
+                    name = name,
+                    songKeys = (0 until keys.length()).mapNotNull { keys.optString(it).takeIf(String::isNotBlank) },
+                    createdAtSec = obj.optLong("at", 0L)
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodePlaylists(playlists: List<Playlist>): String {
+        val arr = JSONArray()
+        playlists.forEach { playlist ->
+            val keys = JSONArray()
+            playlist.songKeys.forEach { keys.put(it) }
+            arr.put(
+                JSONObject().apply {
+                    put("i", playlist.id)
+                    put("n", playlist.name)
+                    put("k", keys)
+                    put("at", playlist.createdAtSec)
+                }
+            )
+        }
+        return arr.toString()
+    }
+
     private companion object {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_ACCENT = "accent_theme"
@@ -460,6 +535,10 @@ class Prefs(context: Context) {
         const val KEY_SCANNED = "scanned_once"
         const val KEY_HIDDEN = "hidden_songs"
         const val KEY_ARCHIVED = "archived_songs"
+        const val KEY_PLAYLISTS = "playlists"
+        const val KEY_LIB_FOLDER_ONLY = "library_folder_only"
+        const val KEY_LIB_FOLDER_URI = "library_folder_uri"
+        const val KEY_LIB_FOLDER_NAME = "library_folder_name"
         const val KEY_KWM_FOLDER = "kwm_folder_uri"
         const val KEY_KWM_FOLDER_NAME = "kwm_folder_name"
         const val KEY_KWM_DONE = "kwm_done"

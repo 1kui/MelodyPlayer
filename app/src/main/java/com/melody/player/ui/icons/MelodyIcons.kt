@@ -299,6 +299,31 @@ object MelodyIcons {
         strokePath("tick", width = 2.2f) { moveTo(4.8f, 12.6f); lineTo(9.8f, 17.6f); lineTo(19.2f, 6.6f) }
     }
 
+    /** 多选：两行勾 + 右边一道竖线，表示"勾一批"。 */
+    val CheckList: ImageVector = build("melody_check_list") {
+        strokePath("t1", width = 1.9f) { moveTo(3.4f, 7.0f); lineTo(6.0f, 9.6f); lineTo(10.6f, 5.0f) }
+        strokePath("l1", width = 1.7f) { moveTo(13.2f, 7.0f); lineTo(20.6f, 7.0f) }
+        strokePath("t2", width = 1.9f) { moveTo(3.4f, 16.4f); lineTo(6.0f, 19.0f); lineTo(10.6f, 14.4f) }
+        strokePath("l2", width = 1.7f) { moveTo(13.2f, 16.4f); lineTo(20.6f, 16.4f) }
+    }
+
+    /**
+     * 去掉封面：方框 + 斜杠。
+     *
+     * 斜杠是"划掉"而不是"删除"：这个动作只撤掉 App 这一层，
+     * 音频文件内嵌的封面还在 —— 图标不该给"整个删掉"的错觉。
+     */
+    val ImageOff: ImageVector = build("melody_image_off") {
+        strokePath("frame", width = 1.9f) {
+            moveTo(3.4f, 5.2f)
+            lineTo(20.6f, 5.2f)
+            lineTo(20.6f, 18.8f)
+            lineTo(3.4f, 18.8f)
+            close()
+        }
+        strokePath("slash", width = 2.0f) { moveTo(4.8f, 19.4f); lineTo(19.2f, 4.6f) }
+    }
+
     /** 排序：三条递减横线。 */
     val Sort: ImageVector = build("melody_sort") {
         strokePath("l1", width = 1.9f) { moveTo(3.6f, 6.4f); lineTo(20.4f, 6.4f) }
@@ -379,6 +404,52 @@ object MelodyIcons {
         strokePath("ring", width = 1.9f, closed = true) { circle(12.0f, 12.0f, 8.6f) }
         solidPath("dot") { circle(12.0f, 7.9f, 1.25f) }
         strokePath("stem", width = 1.9f) { moveTo(12.0f, 11.2f); lineTo(12.0f, 16.6f) }
+    }
+
+    /**
+     * QQ 群：三个并排的头肩。
+     *
+     * 刻意不画企鹅（那是 QQ 的商标形象，且线条复杂画不像），
+     * 用「群聊」这个通用语义：三个人 = 群。
+     */
+    val Group: ImageVector = build("melody_group") {
+        // 后排两个（只画头与肩，压低一档高度表示"在后面"）
+        strokePath("headL", width = 1.8f, closed = true) { circle(7.4f, 8.6f, 2.5f) }
+        strokePath("bodyL", width = 1.8f) { moveTo(3.4f, 18.6f); arcToRelative(4.0f, 4.6f, 0f, false, true, 8.0f, 0.0f) }
+        strokePath("headR", width = 1.8f, closed = true) { circle(16.6f, 8.6f, 2.5f) }
+        strokePath("bodyR", width = 1.8f) { moveTo(12.6f, 18.6f); arcToRelative(4.0f, 4.6f, 0f, false, true, 8.0f, 0.0f) }
+        // 前排一个（实心头 + 描边肩，视觉重心在前）
+        solidPath("headC") { circle(12.0f, 9.6f, 3.0f) }
+        strokePath("bodyC", width = 1.9f) { moveTo(6.6f, 19.6f); arcToRelative(5.4f, 6.0f, 0f, false, true, 10.8f, 0.0f) }
+    }
+
+    /**
+     * 开源仓库：代码括号 `</>`。
+     *
+     * 不用「地球」：那已经被 Globe 占着表示联网/歌词地区，重复图标会让用户以为
+     * 这里也是联网开关。`</>` 直指"源代码"。
+     */
+    val Code: ImageVector = build("melody_code") {
+        strokePath("l1", width = 1.9f) { moveTo(8.4f, 7.6f); lineTo(3.4f, 12.0f); lineTo(8.4f, 16.4f) }
+        strokePath("r1", width = 1.9f) { moveTo(15.6f, 7.6f); lineTo(20.6f, 12.0f); lineTo(15.6f, 16.4f) }
+        strokePath("slash", width = 1.9f) { moveTo(13.4f, 5.0f); lineTo(10.6f, 19.0f) }
+    }
+
+    /**
+     * 写入文件：向下箭头压到一道横线上（软盘的简化形）。
+     *
+     * 这个动作会**改动用户的音频文件**，与「隐藏」「去掉封面」那类只改 App 数据的
+     * 操作性质不同，所以给它一个独立图标，让它在操作条里一眼可辨。
+     */
+    val Save: ImageVector = build("melody_save") {
+        strokePath("tray", width = 1.9f) {
+            moveTo(4.2f, 3.8f)
+            lineTo(4.2f, 20.2f)
+            lineTo(19.8f, 20.2f)
+            lineTo(19.8f, 3.8f)
+        }
+        strokePath("arrow", width = 1.9f) { moveTo(12.0f, 16.4f); lineTo(12.0f, 7.4f) }
+        strokePath("head", width = 1.9f) { moveTo(7.8f, 11.4f); lineTo(12.0f, 7.2f); lineTo(16.2f, 11.4f) }
     }
 
     /**
@@ -633,6 +704,45 @@ object MelodyIcons {
         strokePath("cloud", width = 1.7f, closed = true) { cloudOutline() }
         strokePath("line1", width = 1.5f) { moveTo(8.4f, 12.4f); lineTo(15.6f, 12.4f) }
         strokePath("line2", width = 1.5f) { moveTo(8.4f, 15.0f); lineTo(13.2f, 15.0f) }
+    }
+
+    /**
+     * 歌单：两条横线 + 一条竖线构成的"列表"，右上角一个音符点。
+     *
+     * 和 [QueueList]（三条带序号的横线）刻意区分开：那个表示"接下来会放什么"，
+     * 这个表示"用户自己攒的一组歌"。两处挨得很近，画得像一点会互相干扰。
+     */
+    val Playlist: ImageVector = build("melody_playlist") {
+        strokePath("row1", width = 1.9f) { moveTo(4.2f, 7.2f); lineTo(14.6f, 7.2f) }
+        strokePath("row2", width = 1.9f) { moveTo(4.2f, 12.0f); lineTo(14.6f, 12.0f) }
+        strokePath("row3", width = 1.9f) { moveTo(4.2f, 16.8f); lineTo(11.4f, 16.8f) }
+        solidPath("noteHead") { circle(17.6f, 15.6f, 1.5f) }
+        strokePath("noteStem", width = 1.6f) { moveTo(19.1f, 15.6f); lineTo(19.1f, 9.2f) }
+    }
+
+    /** 加入歌单：歌单的三条横线 + 右上角一个加号。 */
+    val PlaylistAdd: ImageVector = build("melody_playlist_add") {
+        strokePath("row1", width = 1.8f) { moveTo(3.8f, 8.4f); lineTo(13.4f, 8.4f) }
+        strokePath("row2", width = 1.8f) { moveTo(3.8f, 13.0f); lineTo(13.4f, 13.0f) }
+        strokePath("row3", width = 1.8f) { moveTo(3.8f, 17.6f); lineTo(10.2f, 17.6f) }
+        strokePath("plusH", width = 1.9f) { moveTo(17.4f, 9.2f); lineTo(17.4f, 15.4f) }
+        strokePath("plusV", width = 1.9f) { moveTo(14.3f, 12.3f); lineTo(20.5f, 12.3f) }
+    }
+
+    /** 上移一位。菜单里用，所以要比旁边的图标略粗一点，缩小后仍看得清。 */
+    val ArrowUp: ImageVector = build("melody_arrow_up") {
+        strokePath("shaft", width = 2.1f) { moveTo(12.0f, 19.2f); lineTo(12.0f, 5.4f) }
+        strokePath("head", width = 2.1f) {
+            moveTo(6.2f, 11.2f); lineTo(12.0f, 5.2f); lineTo(17.8f, 11.2f)
+        }
+    }
+
+    /** 下移一位。与 [ArrowUp] 严格镜像，两个挨在一起时方向不会看错。 */
+    val ArrowDown: ImageVector = build("melody_arrow_down") {
+        strokePath("shaft", width = 2.1f) { moveTo(12.0f, 4.8f); lineTo(12.0f, 18.6f) }
+        strokePath("head", width = 2.1f) {
+            moveTo(6.2f, 12.8f); lineTo(12.0f, 18.8f); lineTo(17.8f, 12.8f)
+        }
     }
 
     private fun build(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

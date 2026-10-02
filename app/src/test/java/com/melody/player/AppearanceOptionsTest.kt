@@ -3,15 +3,13 @@ package com.melody.player
 import com.melody.player.core.ArtworkShape
 import com.melody.player.core.LyricTextSize
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * 两个外观偏好的纯逻辑：歌词字号档位与封面形状。
  *
- * 这两处出错的方式都很隐蔽 —— 字号到顶了却还能继续点、偏好里存了个不认识的值
- * 就读回默认 —— 都不是崩溃，只是"用起来不对劲"，所以用单测钉住。
+ * 这两处出错的方式都很隐蔽 —— 偏好里存了个不认识的值就读回默认 —— 不是崩溃，
+ * 只是"用起来不对劲"，所以用单测钉住。
  */
 class AppearanceOptionsTest {
 
@@ -24,28 +22,6 @@ class AppearanceOptionsTest {
             listOf("小", "标准", "大", "特大"),
             LyricTextSize.entries.map { it.label }
         )
-    }
-
-    @Test
-    fun `字号走到端点就停住`() {
-        assertEquals(LyricTextSize.STANDARD, LyricTextSize.STANDARD.step(0))
-        assertEquals(LyricTextSize.LARGE, LyricTextSize.STANDARD.step(1))
-        assertEquals(LyricTextSize.SMALL, LyricTextSize.STANDARD.step(-1))
-        // 到端点后再怎么点都停在端点：界面上那一侧会变淡，但真点到了也不该越界
-        assertEquals(LyricTextSize.SMALL, LyricTextSize.SMALL.step(-1))
-        assertEquals(LyricTextSize.XLARGE, LyricTextSize.XLARGE.step(1))
-        assertEquals(LyricTextSize.XLARGE, LyricTextSize.XLARGE.step(9))
-        assertEquals(LyricTextSize.SMALL, LyricTextSize.SMALL.step(-9))
-    }
-
-    @Test
-    fun `字号端点标记与档位顺序一致`() {
-        assertTrue(LyricTextSize.SMALL.isSmallest)
-        assertTrue(LyricTextSize.XLARGE.isLargest)
-        LyricTextSize.entries.filter { it != LyricTextSize.SMALL }
-            .forEach { assertFalse(it.isSmallest) }
-        LyricTextSize.entries.filter { it != LyricTextSize.XLARGE }
-            .forEach { assertFalse(it.isLargest) }
     }
 
     @Test
