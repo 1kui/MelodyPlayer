@@ -407,20 +407,41 @@ object MelodyIcons {
     }
 
     /**
-     * QQ 群：三个并排的头肩。
+     * QQ 群：一个对话气泡 + 三个点。
      *
-     * 刻意不画企鹅（那是 QQ 的商标形象，且线条复杂画不像），
-     * 用「群聊」这个通用语义：三个人 = 群。
+     * 之前画的是「三颗并排的头肩」，在 24px 下三颗头互相压边、实心与描边混用，
+     * 缩到设置行那么大的尺寸后糊成一坨黑团，压根看不出是三个人。
+     * 换成气泡后有两个好处：
+     *  - 24px 下轮廓完整、内部只有三个点，缩到任何尺寸都认得出是"对话/群聊"
+     *  - 「群」这个概念本来就等于「多人在一个对话里」，气泡比人头更贴语义，
+     *    也避开了画企鹅（QQ 的商标形象，线条复杂还画不像）
+     *
+     * 尾巴**长在气泡轮廓上**（单条闭合路径）而不是另画两道笔画：分开画的话尾巴
+     * 和气泡左下角对不上，缩到小尺寸就像个挂在旁边的勾。
+     * 三个点等距实心、半径 1.32，在 24px 下刚好不糊。
      */
     val Group: ImageVector = build("melody_group") {
-        // 后排两个（只画头与肩，压低一档高度表示"在后面"）
-        strokePath("headL", width = 1.8f, closed = true) { circle(7.4f, 8.6f, 2.5f) }
-        strokePath("bodyL", width = 1.8f) { moveTo(3.4f, 18.6f); arcToRelative(4.0f, 4.6f, 0f, false, true, 8.0f, 0.0f) }
-        strokePath("headR", width = 1.8f, closed = true) { circle(16.6f, 8.6f, 2.5f) }
-        strokePath("bodyR", width = 1.8f) { moveTo(12.6f, 18.6f); arcToRelative(4.0f, 4.6f, 0f, false, true, 8.0f, 0.0f) }
-        // 前排一个（实心头 + 描边肩，视觉重心在前）
-        solidPath("headC") { circle(12.0f, 9.6f, 3.0f) }
-        strokePath("bodyC", width = 1.9f) { moveTo(6.6f, 19.6f); arcToRelative(5.4f, 6.0f, 0f, false, true, 10.8f, 0.0f) }
+        // 从左边墙出发 → 斜下到尾巴尖 → 回到气泡底边 → 右上角 → 右边墙 →
+        // 右上/左上圆角 → 左边墙闭合。圆角统一 3.2，正好吃掉 3.2×3.2 的直角。
+        //
+        // arcToRelative 的参数是 (rx, ry, 旋转角, largeArc, sweep, dx, dy)：
+        // 这里三个圆角都必须是 largeArc=false（正圆角）—— 半径正好等于两边的位移，
+        // largeArc=true 会让弧线走另一侧、把气泡拧成花瓣。
+        strokePath("bubble", width = 1.9f, closed = true) {
+            moveTo(3.2f, 12.4f)
+            lineTo(6.8f, 19.6f)
+            lineTo(8.2f, 15.4f)
+            lineTo(17.6f, 15.4f)
+            arcToRelative(3.2f, 3.2f, 0f, false, false, 3.2f, -3.2f)
+            lineTo(20.8f, 8.2f)
+            arcToRelative(3.2f, 3.2f, 0f, false, false, -3.2f, -3.2f)
+            lineTo(6.4f, 5.0f)
+            arcToRelative(3.2f, 3.2f, 0f, false, false, -3.2f, 3.2f)
+            close()
+        }
+        solidPath("d1") { circle(8.4f, 9.8f, 1.32f) }
+        solidPath("d2") { circle(12.0f, 9.8f, 1.32f) }
+        solidPath("d3") { circle(15.6f, 9.8f, 1.32f) }
     }
 
     /**
