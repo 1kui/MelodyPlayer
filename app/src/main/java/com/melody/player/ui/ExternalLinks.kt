@@ -14,6 +14,19 @@ import androidx.compose.ui.platform.LocalContext
 object AboutInfo {
     const val REPO_URL = "https://github.com/1kui/MelodyPlayer"
     const val QQ_GROUP = "1106718126"
+
+    /**
+     * 拉起 QQ 群卡片的协议。
+     *
+     * `show_pslcard` 是 QQ 的「群智能卡」入口：QQ 打开后会直接弹出这张群的名片卡，
+     * 用户点「加入」即可 —— 比 `qm/manage` 那种直接跳管理页的路径更稳，新旧版 QQ 都认。
+     *
+     * `uin` 是发起方QQ 号（1060232645），QQ 靠它判定"是谁把这张卡发出来的"，
+     * 缺了它部分版本会当成第三方拉群而弹二次确认。
+     */
+    const val QQ_CARD_URL =
+        "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=1060232645" +
+            "&card_type=group&source=external&groupcode=$QQ_GROUP"
 }
 
 /**
@@ -37,29 +50,23 @@ object ExternalLinks {
     }
 
     /**
-     * 加入 QQ 群。
+     * 加入 QQ 群：拉起 QQ 的群智能卡片。
      *
-     * 依次尝试两条 QQ 的拉群协议（新版 `qm/manage`、旧版 `dl/manage`），
-     * 都不行（多半是没装 QQ）就把**群号复制到剪贴板**——
+     * 失败（多半是没装 QQ）就把**群号复制到剪贴板**——
      * 这不是凑数的兜底，而是这条功能唯一在任何设备上都能到达的方式：
      * 用户粘进 QQ 的「加群」搜索框一样能进。
      */
     fun joinQqGroup(context: Context): Boolean {
-        val group = AboutInfo.QQ_GROUP
-        val schemes = listOf("mqqapi://qm/manage?groupcode=$group", "mqqapi://dl/manage?groupcode=$group")
-        for (scheme in schemes) {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(scheme))
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (launch(context, intent, fallback = null)) return true
+        val card = Intent(Intent.ACTION_VIEW, Uri.parse(AboutInfo.QQ_CARD_URL))
+        return launch(context, card) {
+            context.copyToClipboard(AboutInfo.QQ_GROUP, "未安装 QQ，群号已复制")
         }
-        return context.copyToClipboard(group, "未安装 QQ，群号已复制")
     }
 
     /**
      * 尝试拉起 [intent]，失败时执行 [fallback]。
      *
-     * 返回是否由 [intent] 成功处理。[fallback] 为 null 时失败即静默返回 false，
-     * 供"多条协议逐个尝试"的场景使用 —— 那时真正的兜底在循环结束之后。
+     * 返回是否由 [intent] 成功处理。
      */
     private fun launch(context: Context, intent: Intent, fallback: (() -> Unit)?): Boolean {
         return try {
