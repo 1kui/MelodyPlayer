@@ -21,11 +21,10 @@ object AboutInfo {
      * `show_pslcard` 是 QQ 的「群智能卡」入口：QQ 打开后会直接弹出这张群的名片卡，
      * 用户点「加入」即可 —— 比 `qm/manage` 那种直接跳管理页的路径更稳，新旧版 QQ 都认。
      *
-     * `uin` 是发起方QQ 号（1060232645），QQ 靠它判定"是谁把这张卡发出来的"，
-     * 缺了它部分版本会当成第三方拉群而弹二次确认。
+     * `uin` 是发起方 QQ 号，与群号 [QQ_GROUP] 相同，QQ 靠它判定"是谁把这张卡发出来的"。
      */
     const val QQ_CARD_URL =
-        "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=1060232645" +
+        "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=$QQ_GROUP" +
             "&card_type=group&source=external&groupcode=$QQ_GROUP"
 }
 
