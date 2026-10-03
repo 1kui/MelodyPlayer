@@ -2,7 +2,7 @@ package com.melody.player
 
 import com.melody.player.core.online.CoverRegion
 import com.melody.player.core.online.RegionPing
-import com.melody.player.ui.screens.regionPingBadge
+import com.melody.player.ui.screens.settings.regionPingBadge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

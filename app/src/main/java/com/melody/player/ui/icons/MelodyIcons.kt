@@ -509,6 +509,72 @@ object MelodyIcons {
         strokePath("hands", width = 1.9f) { moveTo(12.0f, 7.0f); lineTo(12.0f, 12.0f); lineTo(16.2f, 14.4f) }
     }
 
+    /**
+     * 睡眠定时：月牙。
+     *
+     * 用两段方向相反、半径略有差异的圆弧切出月牙，而不是"画个圆再用遮罩盖掉一块" ——
+     * 遮罩要靠 alpha 合成，缩到 16dp 时会发灰发糊，而这个尺寸正是设置行里的用法。
+     */
+    val Moon: ImageVector = build("melody_moon") {
+        strokePath("crescent", width = 1.9f, closed = true) {
+            moveTo(20.2f, 14.4f)
+            arcTo(8.2f, 8.2f, 0f, false, true, 9.6f, 3.8f)
+            arcTo(8.6f, 8.6f, 0f, false, false, 20.2f, 14.4f)
+        }
+    }
+
+    /**
+     * 播放速度：表盘 + 指针。
+     *
+     * 不用「»」这类符号：它在音乐 App 里更像"快进到下一首"，而变速和跳曲是两件事。
+     */
+    val Speed: ImageVector = build("melody_speed") {
+        strokePath("dial", width = 1.9f) {
+            moveTo(3.8f, 17.4f)
+            arcTo(9.0f, 9.0f, 0f, false, true, 20.2f, 17.4f)
+        }
+        strokePath("needle", width = 2.0f) { moveTo(12.0f, 17.4f); lineTo(16.2f, 11.4f) }
+        solidPath("hub") { circle(12.0f, 17.4f, 1.4f) }
+    }
+
+    /**
+     * 专辑：方形封套 + 里面的唱片。
+     *
+     * 方套 + 圆盘两层轮廓，和「图片」「封面缺席」那几个图标不会撞脸 ——
+     * 曲库顶部分段控件上的图标只有 20dp，轮廓必须一眼可分。
+     */
+    val Album: ImageVector = build("melody_album") {
+        strokePath("sleeve", width = 1.9f, closed = true) {
+            roundedRect(4.4f, 4.4f, 19.6f, 19.6f, 2.2f)
+        }
+        strokePath("disc", width = 1.8f, closed = true) { circle(12.0f, 12.0f, 4.0f) }
+        solidPath("hole") { circle(12.0f, 12.0f, 1.1f) }
+    }
+
+    /** 歌手：一个人像（头 + 肩）。曲库按歌手浏览时用。 */
+    val Artist: ImageVector = build("melody_artist") {
+        strokePath("head", width = 1.9f, closed = true) { circle(12.0f, 8.0f, 3.4f) }
+        strokePath("shoulders", width = 1.9f) {
+            moveTo(5.4f, 19.6f)
+            arcTo(6.6f, 6.0f, 0f, false, true, 18.6f, 19.6f)
+        }
+    }
+
+    /** 最近播放：逆时针绕回去的箭头 + 时针，表示"回头再听"。 */
+    val History: ImageVector = build("melody_history") {
+        strokePath("arc", width = 1.9f) {
+            moveTo(4.4f, 11.6f)
+            arcTo(7.6f, 7.6f, 0f, false, true, 19.6f, 11.6f)
+            arcTo(7.6f, 7.6f, 0f, false, true, 12.4f, 19.2f)
+        }
+        strokePath("hands", width = 1.8f) {
+            moveTo(12.0f, 7.6f); lineTo(12.0f, 11.6f); lineTo(15.6f, 13.6f)
+        }
+        solidPath("head") {
+            moveTo(4.4f, 11.6f); lineTo(4.4f, 7.4f); lineTo(8.4f, 9.9f); close()
+        }
+    }
+
     /** 删除：垃圾桶。 */
     val Delete: ImageVector = build("melody_delete") {
         strokePath("lid", width = 1.9f) { moveTo(4.4f, 7.0f); lineTo(19.6f, 7.0f) }
@@ -764,6 +830,22 @@ object MelodyIcons {
         strokePath("head", width = 2.1f) {
             moveTo(6.2f, 12.8f); lineTo(12.0f, 18.8f); lineTo(17.8f, 12.8f)
         }
+    }
+
+    /**
+     * 减一挡（歌词偏移的「提前」那一侧）。
+     *
+     * 用横杠而不是左箭头：这两个按钮成对出现（− / ＋），一横一十字是最短的步进符号，
+     * 也免得和"上一首 / 下一首"的方向箭头撞语义。
+     */
+    val Minus: ImageVector = build("melody_minus") {
+        strokePath("bar", width = 2.2f) { moveTo(5.2f, 12.0f); lineTo(18.8f, 12.0f) }
+    }
+
+    /** 加一挡。与 [Minus] 严格对称：只多一根同长的竖杠。 */
+    val Plus: ImageVector = build("melody_plus") {
+        strokePath("bar", width = 2.2f) { moveTo(5.2f, 12.0f); lineTo(18.8f, 12.0f) }
+        strokePath("stem", width = 2.2f) { moveTo(12.0f, 5.2f); lineTo(12.0f, 18.8f) }
     }
 
     private fun build(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

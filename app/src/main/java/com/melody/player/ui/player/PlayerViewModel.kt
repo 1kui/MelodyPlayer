@@ -11,11 +11,16 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.melody.player.core.AlbumGroup
+import com.melody.player.core.Albums
 import com.melody.player.core.ArchivedEntry
 import com.melody.player.core.ArchivedSongs
+import com.melody.player.core.ArtistGroup
+import com.melody.player.core.Artists
 import com.melody.player.core.ArtworkShape
 import com.melody.player.core.BatchOps
 import com.melody.player.core.BrandArtwork
@@ -24,12 +29,19 @@ import com.melody.player.core.LyricCopyEntry
 import com.melody.player.core.LyricCopyGroup
 import com.melody.player.core.LyricCopyGroups
 import com.melody.player.core.LyricCopyKeys
+import com.melody.player.core.LyricOffset
 import com.melody.player.core.LyricOrigin
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.Lyrics
+import com.melody.player.core.PlayHistory
 import com.melody.player.core.PlayMode
+import com.melody.player.core.PlayRecord
+import com.melody.player.core.PlaybackSpeed
 import com.melody.player.core.Playlist
 import com.melody.player.core.Playlists
+import com.melody.player.core.RecentSearches
+import com.melody.player.core.SleepOption
+import com.melody.player.core.SleepTimer
 import com.melody.player.core.Song
 import com.melody.player.core.SongEdit
 import com.melody.player.core.SongEdits
@@ -57,6 +69,7 @@ import com.melody.player.data.LyricsStore
 import com.melody.player.data.Prefs
 import com.melody.player.data.TagEmbedder
 import com.melody.player.playback.PlaybackService
+import com.melody.player.playback.SleepTimerHost
 import com.melody.player.ui.components.notifyCoverChanged
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -115,7 +128,9 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             kwmFolderName = prefs.kwmFolderName,
             playlists = prefs.playlists,
             libraryFolderOnly = prefs.libraryFolderOnly && prefs.libraryFolderUri != null,
-            libraryFolderName = prefs.libraryFolderName
+            libraryFolderName = prefs.libraryFolderName,
+            playHistory = prefs.playHistory,
+            recentSearches = prefs.recentSearches
         )
     )
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
@@ -239,6 +254,9 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
                 if (c != null && (c.isPlaying || c.playbackState == Player.STATE_BUFFERING)) {
                     _position.value = c.currentPosition.coerceAtLeast(0L)
                 }
+                // 「最常听」的计数只认真正在放的那段墙钟：缓冲与暂停都不算。
+                // 放在这个循环里是因为它本来就在按 250ms 跑，不必再起一个计时器。
+                if (c != null && c.isPlaying) accrueListenTime()
                 delay(POSITION_POLL_MS)
             }
         }
@@ -266,6 +284,8 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             controller = connected
             connected.addListener(playerListener)
             applyPersistedPlaybackModes(connected)
+            // 速度是本会话级的：服务重连（比如被系统回收后又拉起来）时要按界面上的值补一次
+            connected.setPlaybackParameters(PlaybackParameters(_state.value.playbackSpeed))
             pendingCommand?.invoke(connected)
             pendingCommand = null
             restoreQueueIfIdle()
@@ -400,6 +420,10 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         }
         if (song != null && song.key != previousKey) {
             prefs.lastSongKey = song.key
+            // 歌词偏移按曲记忆：换曲立刻换成本曲自己的值，否则页面上会短暂挂着上一首的校正
+            _state.update { it.copy(lyricOffsetMs = prefs.lyricOffsetFor(song.key)) }
+            // 「最近播放」播放即记（划过也算）；「最常听」另走 accrueListenTime 的 30 秒门槛
+            recordPlayed(song)
             loadLyrics(song, duration)
             // 封面与歌词一个待遇：切到哪首就把哪首的封面准备好
             ensureCover(song)
@@ -518,22 +542,42 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         }
         _state.update { current ->
             val visible = HiddenSongs.visible(allSongs, hidden).filterNot { it.key in supersededKeys }
-            val filtered = SongQuery.apply(visible, current.query, current.sort)
-            current.copy(
-                songs = visible,
-                filtered = filtered,
+            // 曲库一变（隐藏、归档让位、重新扫描）就顺手把选中收敛一遍：
+            // 这里是所有会改曲库的操作的收口，不在这里做的话每个调用点都得自己记得，
+            // 漏一个就会出现"已选 N 首"里混着几首列表上已经看不见的歌
+            current.withLibrary(visible, current.query, current.sort).copy(
                 hiddenSongs = hidden,
-                hiddenMissingKeys = missing,
-                // 曲库一变（隐藏、归档让位、重新扫描）就顺手把选中收敛一遍：
-                // 这里是所有会改曲库的操作的收口，不在这里做的话每个调用点都得自己记得，
-                // 漏一个就会出现"已选 N 首"里混着几首列表上已经看不见的歌
-                selection = if (current.selection.isEmpty()) {
-                    emptySet()
-                } else {
-                    BatchOps.pruneSelection(current.selection, filtered.mapTo(HashSet()) { it.key })
-                }
+                hiddenMissingKeys = missing
             )
         }
+        // 曲库变了，「最近播放 / 最常听」里可能有几首已经不在库中，得重解析一遍
+        publishPlayHistory()
+    }
+
+    /**
+     * 由「可见曲目 + 查询 + 排序」重算列表，以及**依赖它的派生视图**。
+     *
+     * 抽出来是因为 `filtered` 有三个写入点（[applyLibrary] / [setQuery] / [setSort]）：
+     * 各写各的就一定会漏 —— 专辑网格与歌手列表正是靠这里跟着一起收窄的，
+     * 漏了就会出现"搜到 1 首"的专辑点进去还是满满一张。
+     */
+    private fun PlayerUiState.withLibrary(
+        songs: List<Song>,
+        query: String,
+        sort: SortMode
+    ): PlayerUiState {
+        val filtered = SongQuery.apply(songs, query, sort)
+        return copy(
+            songs = songs,
+            filtered = filtered,
+            albumGroups = Albums.group(filtered),
+            artistGroups = Artists.group(filtered),
+            selection = if (selection.isEmpty()) {
+                emptySet()
+            } else {
+                BatchOps.pruneSelection(selection, filtered.mapTo(HashSet()) { it.key })
+            }
+        )
     }
 
     fun onPermissionResult(granted: Boolean) {
@@ -549,30 +593,247 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
      * 用户点批量操作，作用对象和他在屏幕上看到的完全对不上。
      */
     fun setQuery(query: String) {
-        _state.update { state ->
-            val filtered = SongQuery.apply(state.songs, query, state.sort)
-            state.copy(
-                query = query,
-                filtered = filtered,
-                selection = if (state.selection.isEmpty()) {
-                    emptySet()
-                } else {
-                    BatchOps.pruneSelection(state.selection, filtered.mapTo(HashSet()) { it.key })
-                }
-            )
-        }
+        _state.update { it.withLibrary(it.songs, query, it.sort).copy(query = query) }
     }
 
     fun setSearchActive(active: Boolean) {
         _state.update {
             if (active) it.copy(searchActive = true)
-            else it.copy(searchActive = false, query = "", filtered = SongQuery.apply(it.songs, "", it.sort))
+            // 退出搜索要把列表恢复成整库：留着上一次的过滤结果，用户会以为歌丢了
+            else it.withLibrary(it.songs, "", it.sort).copy(searchActive = false)
         }
     }
 
     fun setSort(sort: SortMode) {
         prefs.sortMode = sort
-        _state.update { it.copy(sort = sort, filtered = SongQuery.apply(it.songs, it.query, sort)) }
+        _state.update { it.withLibrary(it.songs, it.query, sort).copy(sort = sort) }
+    }
+
+    // --------------------------------------------- 歌词偏移 / 睡眠定时 / 播放速度
+
+    /**
+     * 把当前曲目的歌词偏移挪一挡（+1 = 歌词延后，-1 = 提前），并按曲记住。
+     *
+     * 不需要重载歌词、也不重建时间轴：偏移只在"现在该高亮哪一行"这一步参与计算
+     * （见 [LyricOffset.apply]），改完状态整页重组，播放中立刻生效。
+     */
+    fun nudgeLyricOffset(direction: Int) {
+        val song = _state.value.currentSong ?: return
+        val current = _state.value.lyricOffsetMs
+        val next = LyricOffset.step(current, direction)
+        if (next == current) return          // 已经顶在上下限上，别白写一次盘
+        prefs.setLyricOffset(song.key, next)
+        _state.update { it.copy(lyricOffsetMs = next) }
+    }
+
+    /** 把当前曲目的歌词偏移清回 0。 */
+    fun resetLyricOffset() {
+        val song = _state.value.currentSong ?: return
+        if (_state.value.lyricOffsetMs == 0L) return
+        prefs.setLyricOffset(song.key, 0L)
+        _state.update { it.copy(lyricOffsetMs = 0L) }
+    }
+
+    /**
+     * 设定睡眠定时。
+     *
+     * deadline 算一次、放两处：一份进状态给界面画倒计时，一份交给 [SleepTimerHost]
+     * 由播放服务去等 —— 两边读的是同一个数，显示与到点不会各走各的。
+     */
+    fun setSleepTimer(option: SleepOption) {
+        val deadline = SleepTimer.deadlineFrom(SleepTimerHost.now(), option)
+        _state.update { it.copy(sleepDeadlineMs = deadline) }
+        SleepTimerHost.set(deadline)
+        ensureSleepTicker()
+        _messages.tryEmit("已设定：${option.label}后暂停播放")
+    }
+
+    /** 取消睡眠定时。没设过就什么都不做。 */
+    fun cancelSleepTimer() {
+        if (_state.value.sleepDeadlineMs == null) return
+        _state.update { it.copy(sleepDeadlineMs = null) }
+        _sleepRemainingMs.value = null
+        SleepTimerHost.set(null)
+        _messages.tryEmit("已取消睡眠定时")
+    }
+
+    /** 设定播放速度。只对本会话有效，不落盘（见 [PlayerUiState.playbackSpeed]）。 */
+    fun setPlaybackSpeed(speed: Float) {
+        val clamped = speed.coerceIn(PlaybackSpeed.MIN, PlaybackSpeed.MAX)
+        _state.update { it.copy(playbackSpeed = clamped) }
+        withController { it.setPlaybackParameters(PlaybackParameters(clamped)) }
+        _messages.tryEmit(
+            if (PlaybackSpeed.isDefault(clamped)) "已恢复原速"
+            else "播放速度 ${PlaybackSpeed.label(clamped)}"
+        )
+    }
+
+    // ------------------------------------------------------------ 浏览维度
+
+    /** 切换曲库的浏览维度（歌曲 / 专辑 / 歌手）。顺手退出已经打开的详情页。 */
+    fun setBrowseMode(mode: LibraryBrowse) {
+        _state.update { it.copy(browseMode = mode, openAlbumKey = null, openArtist = null) }
+    }
+
+    fun openAlbum(group: AlbumGroup) {
+        _state.update { it.copy(openAlbumKey = group.key, openArtist = null) }
+    }
+
+    fun openArtist(group: ArtistGroup) {
+        _state.update { it.copy(openArtist = group.key, openAlbumKey = null) }
+    }
+
+    /** 从专辑 / 歌手详情退回上一层。返回是否真的退了一层（供返回键编排使用）。 */
+    fun closeBrowseDetail(): Boolean {
+        if (!_state.value.browseDetailOpen) return false
+        _state.update { it.copy(openAlbumKey = null, openArtist = null) }
+        return true
+    }
+
+    // ------------------------------------------------------------ 最近搜索
+
+    /**
+     * 记一次搜索词。
+     *
+     * 只在用户**真的搜过一次**之后调（键盘上的搜索键、或点最近搜索里的一条），
+     * 不要挂在 [setQuery] 上 —— 那会一边打字一边存，"晴""晴天""晴天 "全进历史。
+     */
+    fun rememberSearch(query: String) {
+        val next = RecentSearches.push(_state.value.recentSearches, query)
+        if (next == _state.value.recentSearches) return
+        prefs.recentSearches = next
+        _state.update { it.copy(recentSearches = next) }
+    }
+
+    fun forgetSearch(query: String) {
+        val next = RecentSearches.remove(_state.value.recentSearches, query)
+        if (next == _state.value.recentSearches) return
+        prefs.recentSearches = next
+        _state.update { it.copy(recentSearches = next) }
+    }
+
+    fun clearRecentSearches() {
+        if (_state.value.recentSearches.isEmpty()) return
+        prefs.recentSearches = emptyList()
+        _state.update { it.copy(recentSearches = emptyList()) }
+    }
+
+    // -------------------------------------------------- 歌词副本：全局视图
+
+    /**
+     * 从设置页打开「歌词副本」的**全局**视图（含认不回歌曲的孤儿副本）。
+     *
+     * 与 [requestLyricCopies] 分开：那个是"看这几首歌的"，作用对象必须由调用方给；
+     * 全局入口没有对象可言，所以走 [PlayerUiState.lyricCopyShowAll] 这个布尔。
+     */
+    fun requestLyricCopiesAll() {
+        refreshLyricCopies()
+        _state.update { it.copy(lyricCopyShowAll = true, lyricCopyRequestKeys = null) }
+    }
+
+    /**
+     * 清掉所有认不回歌曲的孤儿副本。
+     *
+     * 复用 [deleteLyricCopyGroups]，而且**只传查出来的那几组** ——
+     * 它按"传进来的范围"删，不会碰到还有歌认领的那些副本。
+     */
+    fun deleteOrphanLyricCopies() {
+        val orphans = LyricCopyGroups.orphans(_state.value.lyricCopyGroups)
+        if (orphans.isEmpty()) {
+            _messages.tryEmit("没有认不回的副本")
+            return
+        }
+        deleteLyricCopyGroups(orphans)
+    }
+
+    // --------------------------------------------------- 播放历史（私有实现）
+
+    /** 正在累计"常听"的曲目 key、已累计的播放毫秒、这一轮是否已经记过。 */
+    private var listenKey: String? = null
+    private var listenAccumMs = 0L
+    private var listenCounted = false
+
+    /**
+     * 「最常听」的计数：按 [POSITION_POLL_MS] 累加，满 30 秒记一次。
+     *
+     * 调用方已经保证只在 `isPlaying` 为真时调 —— 否则一路快切会把整张曲库刷成"常听"，
+     * 这个榜单就废了。
+     *
+     * 计数放在 ViewModel 里意味着**划掉 App 会丢**：这是可以接受的，计数不是关键数据，
+     * 丢了也只是某首歌少记一次。睡眠定时不能这么办（用户要的正是"划掉 App 之后也生效"），
+     * 所以它在播放服务里。
+     */
+    private fun accrueListenTime() {
+        val song = _state.value.currentSong ?: return
+        if (song.key != listenKey) {
+            listenKey = song.key
+            listenAccumMs = 0L
+            listenCounted = false
+        }
+        if (listenCounted) return
+        listenAccumMs += POSITION_POLL_MS
+        if (listenAccumMs >= PlayHistory.COUNT_THRESHOLD_MS) {
+            listenCounted = true
+            recordListened(song.key)
+        }
+    }
+
+    private fun recordPlayed(song: Song) {
+        val next = PlayHistory.markPlayed(prefs.playHistory, song, System.currentTimeMillis() / 1000L)
+        prefs.playHistory = next
+        publishPlayHistory(next)
+    }
+
+    private fun recordListened(key: String) {
+        val next = PlayHistory.markListened(prefs.playHistory, key)
+        prefs.playHistory = next
+        publishPlayHistory(next)
+    }
+
+    /** 把播放历史原表与两个榜单一起推给界面。 */
+    private fun publishPlayHistory(records: List<PlayRecord> = prefs.playHistory) {
+        val songs = _state.value.songs
+        _state.update {
+            it.copy(
+                playHistory = records,
+                recentPlayedSongs = PlayHistory.resolve(PlayHistory.recent(records, HISTORY_PREVIEW), songs),
+                mostPlayedSongs = PlayHistory.resolve(PlayHistory.mostPlayed(records, HISTORY_PREVIEW), songs)
+            )
+        }
+    }
+
+    // --------------------------------------------------- 睡眠倒计时（私有）
+
+    /**
+     * 睡眠定时的剩余毫秒，每秒刷一次；没设定时为 null。
+     *
+     * 单独一条流、而不是把"还剩多少"塞进 [PlayerUiState]：`StateFlow` 对**相等的值**
+     * 不会发射，而倒计时每秒都在变、deadline 本身不变 —— 塞进大 state 里要么每秒
+     * 把整棵界面树换一份新状态，要么干脆不刷新（倒计时卡着不动）。
+     */
+    private val _sleepRemainingMs = MutableStateFlow<Long?>(null)
+    val sleepRemainingMs: StateFlow<Long?> = _sleepRemainingMs.asStateFlow()
+
+    private var sleepTicker: Job? = null
+
+    private fun ensureSleepTicker() {
+        if (sleepTicker?.isActive == true) return
+        sleepTicker = viewModelScope.launch {
+            while (isActive) {
+                val deadline = _state.value.sleepDeadlineMs ?: break
+                val left = SleepTimer.remaining(deadline, SleepTimerHost.now())
+                _sleepRemainingMs.value = left
+                if (left <= 0L) {
+                    // 到点了：清掉界面上的定时标记。真正把播放暂停下来的是播放服务那侧
+                    // （它才是"划掉 App 也还在"的那一个）。
+                    _sleepRemainingMs.value = null
+                    _state.update { it.copy(sleepDeadlineMs = null) }
+                    break
+                }
+                delay(1_000L)
+            }
+            sleepTicker = null
+        }
     }
 
     /** 用户通过系统文件选择器导入音频。 */
@@ -1481,11 +1742,13 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     fun requestLyricCopies(keys: Set<String>) {
         if (keys.isEmpty()) return
         refreshLyricCopies()
-        _state.update { it.copy(lyricCopyRequestKeys = keys) }
+        // 单曲入口要**明确**把全局标记压回 false：否则上一次从设置页看完全部副本、
+        // 这次从某一行点开，弹层会继续按"看全部"渲染
+        _state.update { it.copy(lyricCopyRequestKeys = keys, lyricCopyShowAll = false) }
     }
 
     fun dismissLyricCopies() {
-        _state.update { it.copy(lyricCopyRequestKeys = null) }
+        _state.update { it.copy(lyricCopyRequestKeys = null, lyricCopyShowAll = false) }
     }
 
     /** 打开一份副本的正文预览。 */
@@ -1888,6 +2151,31 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         val list = _state.value.filtered.ifEmpty { _state.value.songs }
         val index = list.indexOfFirst { it.key == song.key }
         if (index >= 0) playAll(list, index) else playAll(listOf(song), 0)
+    }
+
+    /**
+     * 把一批曲目**追加**到播放队列末尾（专辑 / 歌手页的「加入队列」）。
+     *
+     * 队列空的时候直接等同于"从头放"：往一个空队列里追加，用户看到的还是"什么都没开始"，
+     * 而他按下这个按钮的意图就是听。
+     *
+     * 状态里的队列**从控制器反推**（走 [syncFromController]），而不是就地 `queue + songs`：
+     * 控制器是队列的唯一事实源，`addMediaItems` 是异步的、和连接状态纠缠在一起 ——
+     * 两边各写一份，迟早出现"界面上有 12 首、实际只放得出 8 首"。
+     * 所以先把这批歌塞进 [songCache]（反推时靠它把 mediaId 解析回曲目），加完立刻同步一次。
+     */
+    fun enqueueAll(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        if (_state.value.queue.isEmpty()) {
+            playAll(songs, 0)
+            return
+        }
+        songs.forEach { songCache[it.key] = it }
+        withController { c ->
+            c.addMediaItems(songs.map(::mediaItemOf))
+            syncFromController()
+        }
+        _messages.tryEmit("已把 ${songs.size} 首加到播放队列末尾")
     }
 
     fun togglePlayPause() {
@@ -2726,6 +3014,9 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
 
     private companion object {
         const val POSITION_POLL_MS = 250L
+
+        /** 「最近播放 / 最常听」各取前多少条交给界面。首页横滑看得到的就是这么多。 */
+        const val HISTORY_PREVIEW = 20
 
         /**
          * 两次地区测速之间留的间隔。

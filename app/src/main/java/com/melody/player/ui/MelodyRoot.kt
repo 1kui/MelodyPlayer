@@ -55,7 +55,9 @@ import com.melody.player.core.FileNames
 import com.melody.player.core.LyricCopyEntry
 import com.melody.player.core.LyricCopyGroup
 import com.melody.player.core.LyricCopyGroups
+import com.melody.player.core.PlaybackSpeed
 import com.melody.player.core.Playlist
+import com.melody.player.core.SleepOption
 import com.melody.player.core.Song
 import com.melody.player.core.SongQuery
 import com.melody.player.data.AudioLibrary
@@ -64,10 +66,12 @@ import com.melody.player.ui.components.CoverSourceDialog
 import com.melody.player.ui.components.EmbedTagsDialog
 import com.melody.player.ui.components.LocalArtworkShape
 import com.melody.player.ui.components.LyricCopiesSheet
+import com.melody.player.ui.components.MelodyActionSheet
 import com.melody.player.ui.components.MelodySnackbarHost
 import com.melody.player.ui.components.MiniPlayer
 import com.melody.player.ui.components.PlaylistNameDialog
 import com.melody.player.ui.components.PlaylistPickerDialog
+import com.melody.player.ui.components.SheetAction
 import com.melody.player.ui.components.SongEditDialog
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
@@ -77,7 +81,9 @@ import com.melody.player.ui.screens.LibraryTopBar
 import com.melody.player.ui.screens.PlayerScreen
 import com.melody.player.ui.screens.QueueContent
 import com.melody.player.ui.screens.QueueTopBar
+import com.melody.player.ui.screens.SettingsActions
 import com.melody.player.ui.screens.SettingsContent
+import com.melody.player.ui.screens.SettingsPage
 import com.melody.player.ui.screens.SettingsTopBar
 import com.melody.player.ui.theme.AccentTheme
 import com.melody.player.ui.theme.ThemeMode
@@ -122,6 +128,20 @@ fun MelodyRoot(
 
     var tab by remember { mutableStateOf(MelodyTab.LIBRARY) }
     var playerOpen by remember { mutableStateOf(false) }
+
+    /**
+     * 设置页现在停在哪一层。
+     *
+     * **页面栈放在根界面**，不放 `SettingsScreen` 内部：项目没有导航库，返回键全靠
+     * `BackHandler` 的注册顺序排队，而顺序只有在**同一个组合作用域**里才有保证。
+     * 设置页自己拿一个 local state，那个 BackHandler 就注册在它的子树里，
+     * 与播放页、多选两条的关系就说不清了 —— 表现是"在二级页按返回，App 直接退了"。
+     */
+    var settingsPage by remember { mutableStateOf(SettingsPage.ROOT) }
+
+    /** 睡眠定时 / 播放速度的弹层开关。挂根界面：它从播放页 ⋮ 和设置页两处被叫起来。 */
+    var sleepSheetOpen by remember { mutableStateOf(false) }
+    var speedSheetOpen by remember { mutableStateOf(false) }
     // 歌单的"新建 / 改名"共用一个命名对话框；删歌单要二次确认，所以单独一个待删对象
     var pendingPlaylistName by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingPlaylistDelete by remember { mutableStateOf<Playlist?>(null) }
@@ -134,6 +154,9 @@ fun MelodyRoot(
     var pendingDeleteLyric by remember { mutableStateOf<LyricCopyEntry?>(null) }
     var pendingDeleteLyricGroup by remember { mutableStateOf<LyricCopyGroup?>(null) }
     var pendingDeleteLyricShown by remember { mutableStateOf(false) }
+    // 「清理未关联副本」的二次确认。它删的是一批**认不回歌曲**的文件，
+    // 用户在弹层里看不出来它们到底属于哪首歌 —— 更要先说清删的是什么。
+    var pendingDeleteOrphans by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -220,11 +243,78 @@ fun MelodyRoot(
     }
 
     // 返回键的优先级由**注册顺序**决定：后注册的先命中。
-    // 多选这条写在前面，是有意让位给播放页 —— 播放页全屏盖着时先关播放页，
-    // 否则用户会被迫先取消多选才能收起播放器，手感像是两层界面打架。
-    // 都不成立时（多选中、没开播放页）就命中下面这条，收起多选而不是退出 App。
+    //
+    // 三条的先后是这么定的（先注册 = 优先级最低）：
+    //   1. 多选 —— 最低。它只是曲库页上的一层"选择中"状态，任何时候都该最后一个被吃掉；
+    //   2. 设置页二级页 —— 中间。它在 Scaffold 内容区里，正常情况盖不住别的层；
+    //   3. 播放页 —— 最高。它是**全屏浮层**，压在所有东西之上，二级页也压在下面。
+    //      不这么排的话，用户在"设置 → 歌词"里打开了播放页，按返回会先把二级页退掉，
+    //      屏幕下面那层悄悄回退，而眼前的播放页还在 —— 像是返回键没反应。
+    //
+    // 多选这条写在最前面（声明顺序），是有意让位给播放页：否则用户会被迫
+    // 先取消多选才能收起播放器，手感像是两层界面打架。
     BackHandler(enabled = state.selectionMode) { vm.clearSelection() }
+    BackHandler(enabled = settingsPage != SettingsPage.ROOT) { settingsPage = SettingsPage.ROOT }
     BackHandler(enabled = playerOpen) { playerOpen = false }
+
+    /**
+     * 设置页要用的一整包动作。
+     *
+     * `remember` 是为了让它**别每帧换一个新对象** —— `SettingsActions` 是
+     * `@Immutable` 的，同一个实例传下去，二级页的重组可以整片跳过；
+     * 每帧新建一个，等于每次都告诉下游"参数变了"。
+     *
+     * key 里带上 `themeMode` / `accent`：这两项是**值**不是动作，改了就必须换新实例，
+     * 否则设置页会一直画着旧的主题。
+     */
+    val settingsActions = remember(themeMode, accent, onThemeModeChange, onAccentChange) {
+        SettingsActions(
+            navigate = { settingsPage = it },
+            back = { settingsPage = SettingsPage.ROOT },
+            themeMode = themeMode,
+            accent = accent,
+            setThemeMode = onThemeModeChange,
+            setAccent = onAccentChange,
+            refresh = vm::refresh,
+            importAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
+            setLibraryFolderOnly = vm::setLibraryFolderOnly,
+            pickLibraryFolder = { libraryFolderLauncher.launch(null) },
+            clearLibraryFolder = vm::clearLibraryFolder,
+            archiveAll = vm::archiveAll,
+            cancelArchive = vm::cancelArchive,
+            clearArchive = vm::clearArchive,
+            unarchive = { entry -> vm.unarchiveSong(entry) },
+            unhide = vm::unhideSong,
+            restoreAllHidden = vm::clearHiddenSongs,
+            setAutoFetchLyrics = vm::setAutoFetchLyrics,
+            setLyricProvider = vm::setLyricProviderEnabled,
+            openLyricCopiesAll = vm::requestLyricCopiesAll,
+            setSwipeSwitchSong = vm::setSwipeSwitchSong,
+            cyclePlayMode = vm::cyclePlayMode,
+            openSleepTimer = { sleepSheetOpen = true },
+            setArtworkShape = vm::setArtworkShape,
+            setLyricTextSize = vm::setLyricTextSize,
+            setAutoFetchCovers = vm::setAutoFetchCovers,
+            backfillCovers = vm::backfillCovers,
+            cancelBackfillCovers = vm::cancelCoverBackfill,
+            clearCoverCache = vm::clearCoverCache,
+            reparseEmbedded = { vm.reparseEmbeddedArtwork() },
+            setCoverMinScore = vm::setCoverMinScore,
+            setCoverRegionCustom = vm::setCoverRegionCustom,
+            toggleCoverRegion = vm::toggleCoverRegion,
+            probeCoverRegions = vm::probeCoverRegions,
+            kwmScanDevice = vm::scanKwmDevice,
+            kwmPickFolder = { kwmFolderLauncher.launch(null) },
+            kwmRescanFolder = vm::rescanKwmFolder,
+            kwmPickFiles = { kwmFileLauncher.launch(arrayOf("*/*")) },
+            kwmRemove = vm::removeKwmFile,
+            kwmClearList = vm::clearKwmList,
+            kwmDecrypt = vm::decryptKwm,
+            kwmDecryptAgain = vm::decryptKwmAgain,
+            kwmDecryptAll = vm::decryptAllKwm,
+            kwmCancel = vm::cancelKwm
+        )
+    }
 
     // 封面形状是全局外观设置：用 CompositionLocal 往下传，而不是给四处 SongArtwork
     // 调用点各加一个参数 —— 逐个传参等于给每个调用点都留一次"忘了传"的机会
@@ -240,7 +330,13 @@ fun MelodyRoot(
                             sort = state.sort,
                             totalCount = state.songs.size,
                             onQueryChange = vm::setQuery,
-                            onSearchToggle = vm::setSearchActive,
+                            // 关掉搜索框也是"我真的搜过一次"的信号：键盘上的搜索键不是
+                            // 每个人都会按。记在清空之前 —— 存的是收手那一刻的完整词，
+                            // 不会被一路打字存下半成品（空白串由 RecentSearches.push 丢掉）。
+                            onSearchToggle = { active ->
+                                if (!active) vm.rememberSearch(state.query)
+                                vm.setSearchActive(active)
+                            },
                             onSortChange = vm::setSort,
                             onImportAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
                             onRefresh = vm::refresh,
@@ -263,7 +359,10 @@ fun MelodyRoot(
                             onClear = { pendingQueueClear = true }
                         )
 
-                        MelodyTab.SETTINGS -> SettingsTopBar()
+                        MelodyTab.SETTINGS -> SettingsTopBar(
+                            page = settingsPage,
+                            onBack = { settingsPage = SettingsPage.ROOT }
+                        )
                     }
                 },
                 bottomBar = {
@@ -286,6 +385,12 @@ fun MelodyRoot(
                                     selected = tab == entry,
                                     onClick = {
                                         tab = entry
+                                        // 离开设置标签就把二级页收回首屏：下次再进来
+                                        // 看到的应该是"常用"，而不是上次翻到的某一页 ——
+                                        // 用户不会记得自己上次停在哪，只会觉得"设置页怎么怪怪的"
+                                        if (entry != MelodyTab.SETTINGS) {
+                                            settingsPage = SettingsPage.ROOT
+                                        }
                                         // 多选只对曲库有意义，跑到别的标签还留着它
                                         // 会让用户一进队列页就看到"已选 N 首"的残留状态
                                         if (entry != MelodyTab.LIBRARY) vm.clearSelection()
@@ -371,45 +476,9 @@ fun MelodyRoot(
 
                         MelodyTab.SETTINGS -> SettingsContent(
                             state = state,
-                            themeMode = themeMode,
-                            accent = accent,
-                            onThemeModeChange = onThemeModeChange,
-                            onAccentChange = onAccentChange,
-                            onUnhide = vm::unhideSong,
-                            onRestoreAllHidden = vm::clearHiddenSongs,
-                            onRefresh = vm::refresh,
-                            onImportAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
-                            onArchiveAll = vm::archiveAll,
-                            onCancelArchive = vm::cancelArchive,
-                            onClearArchive = vm::clearArchive,
-                            onUnarchive = { entry -> vm.unarchiveSong(entry) },
-                            onAutoFetchLyricsChange = vm::setAutoFetchLyrics,
-                            onKwmScanDevice = vm::scanKwmDevice,
-                            onKwmPickFolder = { kwmFolderLauncher.launch(null) },
-                            onKwmRescanFolder = vm::rescanKwmFolder,
-                            onKwmPickFiles = { kwmFileLauncher.launch(arrayOf("*/*")) },
-                            onKwmRemove = vm::removeKwmFile,
-                            onKwmClearList = vm::clearKwmList,
-                            onKwmDecrypt = vm::decryptKwm,
-                            onKwmDecryptAgain = vm::decryptKwmAgain,
-                            onKwmDecryptAll = vm::decryptAllKwm,
-                            onKwmCancel = vm::cancelKwm,
-                            onAutoFetchCoversChange = vm::setAutoFetchCovers,
-                            onBackfillCovers = vm::backfillCovers,
-                            onCancelBackfillCovers = vm::cancelCoverBackfill,
-                            onClearCoverCache = vm::clearCoverCache,
-                            onReparseEmbedded = { vm.reparseEmbeddedArtwork() },
-                            onSwipeSwitchSongChange = vm::setSwipeSwitchSong,
-                            onArtworkShapeChange = vm::setArtworkShape,
-                            onLyricTextSizeChange = vm::setLyricTextSize,
-                            onLyricProviderChange = vm::setLyricProviderEnabled,
-                            onCoverMinScoreChange = vm::setCoverMinScore,
-                            onCoverRegionCustomChange = vm::setCoverRegionCustom,
-                            onToggleCoverRegion = vm::toggleCoverRegion,
-                            onProbeCoverRegions = vm::probeCoverRegions,
-                            onLibraryFolderOnlyChange = vm::setLibraryFolderOnly,
-                            onPickLibraryFolder = { libraryFolderLauncher.launch(null) },
-                            onClearLibraryFolder = vm::clearLibraryFolder,
+                            page = settingsPage,
+                            actions = settingsActions,
+                            sleepRemaining = vm.sleepRemainingMs,
                             contentPadding = bottomPadding
                         )
                     }
@@ -427,6 +496,7 @@ fun MelodyRoot(
                 PlayerScreen(
                     state = state,
                     positionMs = position,
+                    sleepRemaining = vm.sleepRemainingMs,
                     onCollapse = { playerOpen = false },
                     onTogglePlay = vm::togglePlayPause,
                     onNext = vm::next,
@@ -437,6 +507,10 @@ fun MelodyRoot(
                         playerOpen = false
                         tab = MelodyTab.QUEUE
                     },
+                    onNudgeLyricOffset = vm::nudgeLyricOffset,
+                    onResetLyricOffset = vm::resetLyricOffset,
+                    onOpenSpeed = { speedSheetOpen = true },
+                    onOpenSleepTimer = { sleepSheetOpen = true },
                     onImportLyrics = { lyricImportLauncher.launch(arrayOf("*/*")) },
                     onFetchOnlineLyrics = vm::fetchLyricsOnline,
                     onPickOnlineLyric = vm::applyOnlineCandidate,
@@ -455,6 +529,37 @@ fun MelodyRoot(
                     onManageLyricCopies = {
                         state.currentSong?.let { vm.requestLyricCopies(setOf(it.key)) }
                     }
+                )
+            }
+
+            // 睡眠定时 / 播放速度的弹层。
+            //
+            // 挂在这里而不是播放页里：这两个动作在**播放页 ⋮ 与设置页「常用」两处**
+            // 都能触发，而播放页是一层全屏浮层 —— 弹层长在它里面，从设置页那边
+            // 就根本叫不起来（用户点完"什么都没发生"）。
+            if (sleepSheetOpen) {
+                SleepTimerSheet(
+                    timerSet = state.sleepDeadlineMs != null,
+                    onPick = { option ->
+                        sleepSheetOpen = false
+                        vm.setSleepTimer(option)
+                    },
+                    onCancelTimer = {
+                        sleepSheetOpen = false
+                        vm.cancelSleepTimer()
+                    },
+                    onDismiss = { sleepSheetOpen = false }
+                )
+            }
+
+            if (speedSheetOpen) {
+                PlaybackSpeedSheet(
+                    current = state.playbackSpeed,
+                    onPick = { speed ->
+                        speedSheetOpen = false
+                        vm.setPlaybackSpeed(speed)
+                    },
+                    onDismiss = { speedSheetOpen = false }
                 )
             }
 
@@ -625,28 +730,48 @@ fun MelodyRoot(
                 )
             }
 
-            // 「歌词副本」弹层。挂在根界面而不是曲库页里：它的三个入口
-            // （曲库行菜单、多选批量条、播放页）跨了两层，而播放页是一层全屏浮层 ——
-            // 长在曲库页里的弹层会被它整个盖住。
+            // 「歌词副本」弹层。挂在根界面而不是曲库页里：它的入口
+            // （曲库行菜单、多选批量条、播放页、设置页「歌词」）跨了两层，
+            // 而播放页是一层全屏浮层 —— 长在曲库页里的弹层会被它整个盖住。
             //
             // 弹层开着的时候删除副本不会把它关掉（它与被刷新的列表行没有关系），
             // 用户能一份一份接着收拾，这是从设置页那份清单搬过来时最容易丢掉的一点。
-            state.lyricCopyRequestKeys?.let { keys ->
-                val shown = LyricCopyGroups.restrict(state.lyricCopyGroups, keys)
+            //
+            // 两种口径共用一个弹层（见 LyricCopiesSheet.showAll）：按对象时列表由
+            // `restrict` 收窄到用户点的那几首；从设置页进来时没有对象可言，列全库。
+            val copyRequestKeys = state.lyricCopyRequestKeys
+            if (copyRequestKeys != null || state.lyricCopyShowAll) {
+                val showAll = state.lyricCopyShowAll
+                val shown = if (showAll) {
+                    state.lyricCopyGroups
+                } else {
+                    LyricCopyGroups.restrict(state.lyricCopyGroups, copyRequestKeys.orEmpty())
+                }
                 LyricCopiesSheet(
                     groups = shown,
-                    requestedCount = keys.size,
+                    // 全局口径下"已选 N 首"没意义，传的是**有几首歌**（副标题按 showAll 另写）
+                    requestedCount = if (showAll) {
+                        shown.count { it.songKey != null }
+                    } else {
+                        copyRequestKeys?.size ?: 0
+                    },
+                    showAll = showAll,
                     onPreview = vm::previewLyricCopy,
                     onDelete = { pendingDeleteLyric = it },
                     onDeleteGroup = { pendingDeleteLyricGroup = it },
                     onDeleteAllShown = {
                         if (shown.any { it.entries.isNotEmpty() }) pendingDeleteLyricShown = true
                     },
+                    onDeleteOrphans = if (showAll) {
+                        { pendingDeleteOrphans = true }
+                    } else {
+                        null
+                    },
                     onDismiss = vm::dismissLyricCopies
                 )
 
-                // 删一份 / 删一首的全部 / 删列出的全部 —— 三种量级共用上面那个"待删"状态，
-                // 放在这里是因为它们都得先说清"删掉之后这首歌会退回什么"，
+                // 删一份 / 删一首的全部 / 删列出的全部 / 清理孤儿 —— 四种量级共用上面那个
+                // "待删"状态，放在这里是因为它们都得先说清"删掉之后这首歌会退回什么"，
                 // 而那句话与列表里是哪几首无关
                 pendingDeleteLyric?.let { entry ->
                     AlertDialog(
@@ -725,6 +850,34 @@ fun MelodyRoot(
                         }
                     )
                 }
+
+                if (pendingDeleteOrphans) {
+                    val orphans = LyricCopyGroups.orphans(shown)
+                    val count = orphans.sumOf { it.count }
+                    AlertDialog(
+                        onDismissRequest = { pendingDeleteOrphans = false },
+                        title = { Text("清理这 $count 份未关联副本？") },
+                        text = {
+                            Text(
+                                "这些副本的歌词索引已经丢失，认不回是哪首歌，也不会再被播放用到 —— " +
+                                    "它们只是占着 App 目录的空间。\n" +
+                                    "清理**只删这几份未关联的**：上面那些能认回歌曲的副本一份都不动，" +
+                                    "你的音乐文件与写进音频文件里的歌词也不动。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    pendingDeleteOrphans = false
+                                    vm.deleteOrphanLyricCopies()
+                                }
+                            ) { Text("清理", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingDeleteOrphans = false }) { Text("取消") }
+                        }
+                    )
+                }
             }
 
             // 副本正文。预览要能盖在弹层上面，所以和弹层同级挂在这里
@@ -783,6 +936,117 @@ fun MelodyRoot(
             )
         }
     }
+}
+
+/**
+ * 睡眠定时的选择弹层。
+ *
+ * 五挡就够，不给"自定义分钟数"：这个功能的使用场景是躺着准备睡，
+ * 不该让人为了填一个数字去调键盘。**当前是否已设定**只改副标题与尾部那一项 ——
+ * 已设定时时多一个「取消定时」，否则用户只能靠"重设一个更长的"来抵消，
+ * 而列表里没有任何一项叫"不要定时"。
+ */
+@Composable
+private fun SleepTimerSheet(
+    timerSet: Boolean,
+    onPick: (SleepOption) -> Unit,
+    onCancelTimer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val actions = buildList {
+        SleepOption.entries.forEach { option ->
+            add(
+                SheetAction(
+                    icon = MelodyIcons.Moon,
+                    title = option.label,
+                    subtitle = "从现在起 ${option.label}后自动暂停（队列与进度都留着）",
+                    onClick = { onPick(option) }
+                )
+            )
+        }
+        if (timerSet) {
+            add(
+                SheetAction(
+                    icon = MelodyIcons.Close,
+                    title = "取消定时",
+                    subtitle = "取消后不会自动暂停",
+                    section = "取消",
+                    onClick = onCancelTimer
+                )
+            )
+        }
+    }.let { list ->
+        // 组标题只打在第一项上（与播放页那份动作清单同一套约定）
+        list.mapIndexed { index, action ->
+            if (index == 0) action.copy(section = "设定时长") else action
+        }
+    }
+
+    MelodyActionSheet(
+        title = "睡眠定时",
+        subtitle = if (timerSet) {
+            "已设定 · 到点只暂停，不停止服务"
+        } else {
+            "到点自动暂停播放"
+        },
+        actions = actions,
+        onDismiss = onDismiss
+    )
+}
+
+/**
+ * 播放速度的选择弹层。
+ *
+ * 只列**预设**，不给 ±0.05 的微调：0.75× 到 1.5× 之间"听得出区别"的档就这几个，
+ * 摆一串碎步只会让人纠结"1.10 和 1.15 到底差在哪"。
+ * 当前那一挡靠副标题标出（而不是换掉图标）—— 图标位置一换，整列会在视觉上跳一下。
+ */
+@Composable
+private fun PlaybackSpeedSheet(
+    current: Float,
+    onPick: (Float) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val actions = buildList {
+        PlaybackSpeed.PRESETS.forEach { speed ->
+            val isCurrent = kotlin.math.abs(speed - current) < 0.001f
+            add(
+                SheetAction(
+                    icon = MelodyIcons.Speed,
+                    title = PlaybackSpeed.label(speed),
+                    subtitle = when {
+                        isCurrent -> "当前速度"
+                        PlaybackSpeed.isDefault(speed) -> "原速"
+                        else -> null
+                    },
+                    onClick = { onPick(speed) }
+                )
+            )
+        }
+        if (!PlaybackSpeed.isDefault(current)) {
+            add(
+                SheetAction(
+                    icon = MelodyIcons.Refresh,
+                    title = "恢复原速",
+                    subtitle = "回到 1.00×",
+                    section = "其他",
+                    onClick = { onPick(1f) }
+                )
+            )
+        }
+    }.let { list ->
+        list.mapIndexed { index, action ->
+            if (index == 0) action.copy(section = "选择倍数") else action
+        }
+    }
+
+    MelodyActionSheet(
+        title = "播放速度",
+        // 说清"不落盘"：用户会担心为这一首播客调的速度被静默套到所有音乐上
+        subtitle = "变速不变调 · 只对这次会话有效，重开 App 回到原速",
+        actions = actions,
+        onDismiss = onDismiss
+    )
 }
 
 /** 普通页面里，提示条与底部栏之间留的缝（dp）：贴着迷你条会挡住它的播放键。 */

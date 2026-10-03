@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -60,8 +61,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.melody.player.core.LyricOffset
 import com.melody.player.core.LyricTextSize
+import com.melody.player.core.Lyrics
 import com.melody.player.core.PlayMode
+import com.melody.player.core.PlaybackSpeed
+import com.melody.player.core.SleepTimer
 import com.melody.player.core.Song
 import com.melody.player.core.TimeFormat
 import com.melody.player.core.online.OnlineSong
@@ -73,6 +79,8 @@ import com.melody.player.ui.components.PillSwitcher
 import com.melody.player.ui.components.SongArtwork
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
+import com.melody.player.ui.screens.settings.playModeIcon
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -83,6 +91,14 @@ private enum class PlayerPage { ARTWORK, LYRICS }
 fun PlayerScreen(
     state: PlayerUiState,
     positionMs: Long,
+    /**
+     * 睡眠定时的剩余毫秒（每秒刷新一次）。
+     *
+     * 刻意传**流**而不是一个 `Long?` 值：这一页每秒都要重画那个倒计时小标，
+     * 而值是走 `PlayerUiState` 的话，整页（封面、歌词列表、进度条）会跟着每秒重组一次。
+     * 倒计时读数的重组范围收在一个几十 dp 的小标里，就只剩那一个节点在动。
+     */
+    sleepRemaining: StateFlow<Long?>,
     onCollapse: () -> Unit,
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
@@ -90,6 +106,14 @@ fun PlayerScreen(
     onSeek: (Long) -> Unit,
     onCyclePlayMode: () -> Unit,
     onOpenQueue: () -> Unit,
+    /** 歌词偏移挪一挡（+1 延后 / −1 提前）。 */
+    onNudgeLyricOffset: (Int) -> Unit,
+    /** 歌词偏移清回 0。 */
+    onResetLyricOffset: () -> Unit,
+    /** 打开播放速度弹层（挂在根界面）。 */
+    onOpenSpeed: () -> Unit,
+    /** 打开睡眠定时弹层（挂在根界面）。 */
+    onOpenSleepTimer: () -> Unit,
     onImportLyrics: () -> Unit,
     onFetchOnlineLyrics: () -> Unit,
     onPickOnlineLyric: (OnlineSong) -> Unit,
@@ -180,6 +204,8 @@ fun PlayerScreen(
                             actions = playerActions(
                                 lyricsImported = state.lyricsImported,
                                 onlineSearching = state.onlineSearching,
+                                playbackSpeed = state.playbackSpeed,
+                                sleepSet = state.sleepDeadlineMs != null,
                                 onFetchCover = onFetchCover,
                                 onReparseCover = onReparseCover,
                                 onEmbedTags = onEmbedTags,
@@ -189,7 +215,9 @@ fun PlayerScreen(
                                 onImportLyrics = onImportLyrics,
                                 onReloadLyrics = onReloadLyrics,
                                 onClearImportedLyrics = onClearImportedLyrics,
-                                onManageLyricCopies = onManageLyricCopies
+                                onManageLyricCopies = onManageLyricCopies,
+                                onOpenSpeed = onOpenSpeed,
+                                onOpenSleepTimer = onOpenSleepTimer
                             ),
                             onDismiss = { menuOpen = false }
                         )
@@ -251,6 +279,8 @@ fun PlayerScreen(
                         positionMs = positionMs,
                         textSize = state.lyricTextSize,
                         onSeek = onSeek,
+                        onNudgeOffset = onNudgeLyricOffset,
+                        onResetOffset = onResetLyricOffset,
                         onImportLyrics = onImportLyrics,
                         onFetchOnlineLyrics = onFetchOnlineLyrics
                     )
@@ -315,12 +345,18 @@ fun PlayerScreen(
             // 它比同一行的「3 / 12」高一截（labelSmall + 4dp 竖内边距），于是
             // 封面↔歌词来回切时整片播放控件会上下跳 —— 所以它搬去了歌词区顶部。
             // 字号调节已收进设置页，播放页不再放 A− / A＋。
+            //
+            // 左边的两个小标（变速 / 睡眠倒计时）是 v2.19 加的。它们**两页都画**，
+            // 且都做成一行的最小高度（labelSmall，无竖向 padding）—— 只在歌词页多一行、
+            // 或者比旁边的「3 / 12」高一点点，都会让上面那摞控件跟着动。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 20.dp, end = 20.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                SpeedBadge(state.playbackSpeed)
+                SleepCountdownBadge(sleepRemaining = sleepRemaining)
                 Spacer(Modifier.weight(1f))
                 if (state.queue.isNotEmpty()) {
                     Text(
@@ -337,9 +373,12 @@ fun PlayerScreen(
 /**
  * 播放页的动作清单。
  *
- * 分成「封面 / 歌曲 / 歌词」三组 —— 播放页顶栏那个 ⋮ 以前的内容描述写的是
+ * 分成「播放 / 封面 / 歌曲 / 歌词」四组 —— 播放页顶栏那个 ⋮ 以前的内容描述写的是
  * "更多歌词操作"，可里面却混着换封面、改歌曲信息：找封面的人不会去点一个
  * 说自己只管歌词的按钮。现在按对象分组，名字也改成「更多操作」。
+ *
+ * 「播放」那一组（变速 / 睡眠定时）放在最前面：它是这一页**每天都要按一下**的东西，
+ * 而下面三组是"这首不对劲时才会来"的。顺序按使用频次排，不按对象敏感度排。
  *
  * 「重新解析内嵌封面」以前只在曲库行里；用户在这一页正对着封面看，
  * 想重读的就是它，所以这儿必须有。
@@ -347,6 +386,8 @@ fun PlayerScreen(
 private fun playerActions(
     lyricsImported: Boolean,
     onlineSearching: Boolean,
+    playbackSpeed: Float,
+    sleepSet: Boolean,
     onFetchCover: () -> Unit,
     onReparseCover: () -> Unit,
     onEmbedTags: () -> Unit,
@@ -356,8 +397,35 @@ private fun playerActions(
     onImportLyrics: () -> Unit,
     onReloadLyrics: () -> Unit,
     onClearImportedLyrics: () -> Unit,
-    onManageLyricCopies: () -> Unit
+    onManageLyricCopies: () -> Unit,
+    onOpenSpeed: () -> Unit,
+    onOpenSleepTimer: () -> Unit
 ): List<SheetAction> {
+    val playback = listOf(
+        SheetAction(
+            MelodyIcons.Speed,
+            "播放速度",
+            // 只写"播放速度"用户不知道现在是多少 —— 非原速时把倍数写出来，
+            // 顺手把"这东西现在是生效的"也说明了
+            subtitle = if (PlaybackSpeed.isDefault(playbackSpeed)) {
+                "当前原速；0.75×～1.5× 变速不变调"
+            } else {
+                "当前 ${PlaybackSpeed.label(playbackSpeed)}，点这里改回去或再调"
+            },
+            onClick = onOpenSpeed
+        ),
+        SheetAction(
+            MelodyIcons.Moon,
+            "睡眠定时",
+            subtitle = if (sleepSet) {
+                "已设定，到点自动暂停（可在这里改时长或取消）"
+            } else {
+                "15 分钟～1.5 小时，到点自动暂停并保留队列"
+            },
+            onClick = onOpenSleepTimer
+        )
+    ).startSection("播放")
+
     val cover = listOf(
         SheetAction(
             MelodyIcons.AlbumArt,
@@ -439,7 +507,7 @@ private fun playerActions(
         }
     }.startSection("歌词")
 
-    return cover + songInfo + lyrics
+    return playback + cover + songInfo + lyrics
 }
 
 /** 把组标题打在这一组的第一项上。 */
@@ -531,11 +599,16 @@ private fun LyricsPage(
     positionMs: Long,
     textSize: LyricTextSize,
     onSeek: (Long) -> Unit,
+    onNudgeOffset: (Int) -> Unit,
+    onResetOffset: () -> Unit,
     onImportLyrics: () -> Unit,
     onFetchOnlineLyrics: () -> Unit
 ) {
     val lyrics = state.lyrics
-    val currentIndex = lyrics.indexAt(positionMs)
+    // 高亮用的是**校正后**的位置：偏移只在这一步参与计算，不进 Lyrics 模型、
+    // 不重建时间轴，所以边听边调是立刻生效的（见 LyricOffset.apply）
+    val queryMs = LyricOffset.apply(positionMs, state.lyricOffsetMs)
+    val currentIndex = lyrics.indexAt(queryMs)
     val listState = rememberLazyListState()
 
     // 字号按档位缩放。基准就是「标准」那一挡（旧版本一直用的 16sp），
@@ -553,6 +626,57 @@ private fun LyricsPage(
         }
     }
 
+    // 小条只在**真的能调**的时候出现（有歌词、且没在忙）：对着一屏"这首歌没有歌词"
+    // 还能挪偏移，只会让人以为挪了会重新匹配一份歌词。
+    // 它固定在内容区最上面、不做成列表的第一项 —— 做成列表项会被滚走，
+    // 而"歌词不对齐"这件事是边听边调，调完还想再调一下。
+    val showOffsetBar = lyrics.isUsable && !state.lyricsLoading && !state.onlineSearching
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (showOffsetBar) {
+            LyricOffsetBar(
+                offsetMs = state.lyricOffsetMs,
+                onNudge = onNudgeOffset,
+                onReset = onResetOffset
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            LyricsBody(
+                state = state,
+                lyrics = lyrics,
+                currentIndex = currentIndex,
+                listState = listState,
+                fontSp = fontSp,
+                lineSp = lineSp,
+                rowPad = rowPad,
+                offsetMs = state.lyricOffsetMs,
+                onSeek = onSeek,
+                onImportLyrics = onImportLyrics,
+                onFetchOnlineLyrics = onFetchOnlineLyrics
+            )
+        }
+    }
+}
+
+/** 歌词区的四种形态（解析中 / 联网中 / 没有歌词 / 正常列表）。 */
+@Composable
+private fun LyricsBody(
+    state: PlayerUiState,
+    lyrics: Lyrics,
+    currentIndex: Int,
+    listState: LazyListState,
+    fontSp: Float,
+    lineSp: Float,
+    rowPad: Float,
+    offsetMs: Long,
+    onSeek: (Long) -> Unit,
+    onImportLyrics: () -> Unit,
+    onFetchOnlineLyrics: () -> Unit
+) {
     when {
         state.lyricsLoading -> LyricsBusy("正在解析歌词…")
 
@@ -635,13 +759,117 @@ private fun LyricsPage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .scale(scale)
-                        .clickable { onSeek(line.timeMs) }
+                        // 点一行跳过去时也要**带上偏移**：屏幕上那一行是在
+                        // 「本来时刻 + 偏移」才出现的，跳的是位置本身、不是那一行 ——
+                        // 少加这一下会先跳对、再被偏移拉走半秒，看着像"点了没对准"
+                        .clickable { onSeek((line.timeMs + offsetMs).coerceAtLeast(0L)) }
                         .padding(vertical = rowPad.dp, horizontal = 4.dp)
                 )
             }
             item(key = "lyrics-bottom") { Spacer(Modifier.height(140.dp)) }
         }
     }
+}
+
+/**
+ * 歌词时间轴偏移小条：`歌词偏移   −   未校正   ＋`。
+ *
+ * ## 为什么在这里、而不是 ⋮ 里
+ * 偏移是**一边听一边调**的东西：听到"这句早了半秒"，手指伸过去按两下就对了。
+ * 塞进 ⋮ 弹层意味着每调一挡都要开一次菜单、关一次菜单，而弹层还盖着歌词区 ——
+ * 等于调的过程中看不见自己调的是什么。
+ *
+ * ## 为什么中间那格可以点
+ * 点它清回 0（只在不是 0 的时候可点）。清回原状是这个功能唯一的"取消"，
+ * 而它必须比"再按二十下减号"更容易够到 —— 用户试出一个不喜欢的偏移之后
+ * 想的是"算了"，不是"一步一步退回去"。
+ */
+@Composable
+private fun LyricOffsetBar(
+    offsetMs: Long,
+    onNudge: (Int) -> Unit,
+    onReset: () -> Unit
+) {
+    val changed = offsetMs != 0L
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "歌词偏移",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp)
+        )
+        Spacer(Modifier.weight(1f))
+        IconAction(
+            imageVector = MelodyIcons.Minus,
+            contentDescription = "歌词提前 0.5 秒",
+            onClick = { onNudge(-1) },
+            iconSize = 18.dp,
+            touchSize = 36.dp,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 顶在 ±30 秒上就别再让它可点：按下去什么都不发生，会像卡了
+            enabled = offsetMs > -LyricOffset.MAX_MS
+        )
+        Text(
+            text = LyricOffset.label(offsetMs),
+            style = MaterialTheme.typography.labelLarge,
+            // 改过就用主色：不改的时候它该像不存在，改过就必须一眼看出"不是原状了"
+            color = if (changed) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier
+                .width(84.dp)
+                .clickable(enabled = changed, onClick = onReset)
+                .padding(vertical = 4.dp),
+            textAlign = TextAlign.Center,
+            maxLines = 1
+        )
+        IconAction(
+            imageVector = MelodyIcons.Plus,
+            contentDescription = "歌词延后 0.5 秒",
+            onClick = { onNudge(1) },
+            iconSize = 18.dp,
+            touchSize = 36.dp,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            enabled = offsetMs < LyricOffset.MAX_MS
+        )
+    }
+}
+
+/** 播放速度小标。原速时什么都不画 —— 一个永远写着 `1.00×` 的角标只是噪音。 */
+@Composable
+private fun SpeedBadge(speed: Float) {
+    if (PlaybackSpeed.isDefault(speed)) return
+    Text(
+        text = PlaybackSpeed.label(speed),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(end = 10.dp)
+    )
+}
+
+/**
+ * 睡眠定时倒计时小标。
+ *
+ * 直接读流（而不是收一个值进来）是为了把每秒的重组限制在这**一个** `Text` 上：
+ * 倒计时每秒都在变，值要是从上层传进来，整页会跟着每秒重组一遍。
+ */
+@Composable
+private fun SleepCountdownBadge(sleepRemaining: StateFlow<Long?>) {
+    val remainingMs by sleepRemaining.collectAsStateWithLifecycle()
+    val value = remainingMs ?: return
+    Text(
+        text = SleepTimer.remainingLabel(value),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(end = 10.dp)
+    )
 }
 
 /** 歌词页的空/忙状态：一个转圈加一行说明，两处共用。 */
@@ -869,14 +1097,8 @@ private fun PlayModeButton(
     enabled: Boolean,
     onClick: () -> Unit
 ) {
-    val icon = when (mode) {
-        PlayMode.SEQUENTIAL -> MelodyIcons.PlayOrder
-        PlayMode.LIST_LOOP -> MelodyIcons.Repeat
-        PlayMode.SINGLE_LOOP -> MelodyIcons.RepeatOne
-        PlayMode.SHUFFLE -> MelodyIcons.Shuffle
-    }
     IconAction(
-        imageVector = icon,
+        imageVector = playModeIcon(mode),
         contentDescription = "播放模式：${mode.label}，点击切换",
         onClick = onClick,
         iconSize = 22.dp,

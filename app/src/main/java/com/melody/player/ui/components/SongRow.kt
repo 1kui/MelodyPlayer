@@ -137,7 +137,14 @@ fun SongRow(
      * 谁先判定成"长按"另一个就废掉，表现是拖动时而行不行、时而行。
      * 所以这里给行本身一个"我只负责单击"的开关，而不是在外面硬碰手势。
      */
-    longPressEnabled: Boolean = true
+    longPressEnabled: Boolean = true,
+    /**
+     * 搜索关键词，命中的部分标主色加粗（空串 = 不高亮）。
+     *
+     * 只作用于标题与「歌手 · 专辑」这两行 —— 也就是用户能搜的那三样。
+     * 时长、序号那些不是搜索目标，给它们上色只会让这一行看着花。
+     */
+    highlight: String = ""
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val selectionMode = selected != null
@@ -190,7 +197,11 @@ fun SongRow(
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = song.title,
+                    text = highlightRanges(
+                        song.title,
+                        highlight,
+                        MaterialTheme.colorScheme.primary
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -204,7 +215,11 @@ fun SongRow(
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "${song.artistOrUnknown} · ${song.albumOrUnknown}",
+                text = highlightRanges(
+                    "${song.artistOrUnknown} · ${song.albumOrUnknown}",
+                    highlight,
+                    MaterialTheme.colorScheme.primary
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

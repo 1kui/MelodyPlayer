@@ -9,6 +9,7 @@ import com.melody.player.core.HiddenSongEntry
 import com.melody.player.core.LyricOrigin
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.PlayMode
+import com.melody.player.core.PlayRecord
 import com.melody.player.core.Playlist
 import com.melody.player.core.SongEdit
 import com.melody.player.core.SortMode
@@ -252,6 +253,37 @@ class Prefs(context: Context) {
     }
 
     /**
+     * 某首歌的歌词时间轴偏移（毫秒，正 = 歌词延后）。
+     *
+     * **每曲独立**，不做"全局默认 + 单曲覆盖"：全局默认会让没调过的歌也莫名偏移，
+     * 用户下次听到那首时会以为是歌词源本身有问题，归因不出来。
+     * 值为 0 时把键删掉，偏好文件不会攒下一堆 `= 0` 的死键。
+     */
+    fun lyricOffsetFor(songKey: String): Long = sp.getLong(KEY_LYRIC_OFFSET_PREFIX + songKey, 0L)
+
+    fun setLyricOffset(songKey: String, offsetMs: Long) {
+        val editor = sp.edit()
+        if (offsetMs == 0L) editor.remove(KEY_LYRIC_OFFSET_PREFIX + songKey)
+        else editor.putLong(KEY_LYRIC_OFFSET_PREFIX + songKey, offsetMs)
+        editor.apply()
+    }
+
+    /**
+     * 播放历史（最近播放 / 最常听共用这一张表）。
+     *
+     * 纯本地、卸载即失 —— 没有账号也就没有云端可同步，界面文案要如实说明，
+     * 免得用户以为重装之后还能找回来。
+     */
+    var playHistory: List<PlayRecord>
+        get() = decodePlayHistory(sp.getString(KEY_PLAY_HISTORY, null))
+        set(value) = sp.edit().putString(KEY_PLAY_HISTORY, encodePlayHistory(value)).apply()
+
+    /** 最近搜索过的关键词，最新的在前。 */
+    var recentSearches: List<String>
+        get() = decodeArray(sp.getString(KEY_RECENT_SEARCHES, null))
+        set(value) = sp.edit().putString(KEY_RECENT_SEARCHES, encodeArray(value)).apply()
+
+    /**
      * 偏好里留有歌词痕迹的全部槽位。
      *
      * 给「歌词副本管理」用：副本索引万一丢了，只要用户当初是在 App 里导入/联网获取的，
@@ -383,6 +415,41 @@ class Prefs(context: Context) {
             )
         }
         return obj.toString()
+    }
+
+    private fun decodePlayHistory(raw: String?): List<PlayRecord> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                // 没有 key 的记录是死条目：点不动也删不掉，直接丢
+                val key = obj.optString("k").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                PlayRecord(
+                    key = key,
+                    title = obj.optString("t").takeIf { it.isNotBlank() } ?: "未命名曲目",
+                    artist = obj.optString("a").takeIf { it.isNotBlank() },
+                    lastPlayedAtSec = obj.optLong("at", 0L),
+                    playCount = obj.optInt("c", 0)
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodePlayHistory(records: List<PlayRecord>): String {
+        val arr = JSONArray()
+        records.forEach { record ->
+            arr.put(
+                JSONObject().apply {
+                    put("k", record.key)
+                    put("t", record.title)
+                    record.artist?.let { put("a", it) }
+                    put("at", record.lastPlayedAtSec)
+                    put("c", record.playCount)
+                }
+            )
+        }
+        return arr.toString()
     }
 
     private fun decodeArray(raw: String?): List<String> {
@@ -532,6 +599,9 @@ class Prefs(context: Context) {
         const val KEY_LYRIC_PREFIX = "lyric_uri_"
         const val KEY_LYRIC_NAME_PREFIX = "lyric_name_"
         const val KEY_LYRIC_ORIGIN_PREFIX = "lyric_origin_"
+        const val KEY_LYRIC_OFFSET_PREFIX = "lyric_offset_"
+        const val KEY_PLAY_HISTORY = "play_history"
+        const val KEY_RECENT_SEARCHES = "recent_searches"
         const val KEY_SCANNED = "scanned_once"
         const val KEY_HIDDEN = "hidden_songs"
         const val KEY_ARCHIVED = "archived_songs"

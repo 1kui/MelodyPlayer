@@ -6,6 +6,7 @@ import com.melody.player.core.LyricCopyGroups
 import com.melody.player.core.LyricOrigin
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -228,5 +229,34 @@ class LyricCopyGroupsTest {
     fun `一个都没点名时只剩未关联的副本`() {
         val groups = groupsOf(entry("a.lrc", "ms:1", "晴天"), entry("orphan.lrc", null, "x"))
         assertEquals(listOf<String?>(null), LyricCopyGroups.restrict(groups, emptySet()).map { it.songKey })
+    }
+
+    // ------------------------------------------------------ 只看孤儿（orphans）
+
+    @Test
+    fun `孤儿就是认不回歌曲的那几组`() {
+        val groups = groupsOf(
+            entry("a.lrc", "ms:1", "晴天"),
+            entry("x.lrc", null, "x"),
+            entry("y.lrc", null, "y")
+        )
+        val orphans = LyricCopyGroups.orphans(groups)
+        assertEquals(1, orphans.size)
+        assertEquals(listOf<String?>(null), orphans.map { it.songKey })
+        assertEquals(LyricCopyGroups.ORPHAN_TITLE, orphans.single().title)
+    }
+
+    @Test
+    fun `没有孤儿时返回空`() {
+        assertTrue(LyricCopyGroups.orphans(groupsOf(entry("a.lrc", "ms:1", "晴天"))).isEmpty())
+        assertTrue(LyricCopyGroups.orphans(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `有主人的组不会被误判成孤儿`() {
+        // 归档副本的 key 是 lib: 开头，它同样是有主人的 ——
+        // 判据只看 songKey 是否为 null，不要顺手加"标题像不像未知曲目"之类的条件
+        val groups = groupsOf(entry("lib.lrc", "lib:晴天.mp3", "晴天 · 归档快照"))
+        assertTrue(LyricCopyGroups.orphans(groups).isEmpty())
     }
 }

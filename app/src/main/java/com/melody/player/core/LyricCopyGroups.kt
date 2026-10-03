@@ -108,6 +108,17 @@ object LyricCopyGroups {
         groups.filter { it.songKey == null || it.songKey in keys }
 
     /**
+     * 认不回歌曲的副本组（[LyricCopyGroup.songKey] 为 null）。
+     *
+     * 全局视图里用它做"清理未关联的副本"：这些文件占着 App 目录，
+     * 却没有任何一首歌能通过它们拿到歌词 —— 唯一的去处就是删掉。
+     * 判据只看 songKey，不要顺手加"标题是不是'未知曲目'"之类的条件：
+     * 标题是展示用的，将来改文案就会让这里悄悄失效。
+     */
+    fun orphans(groups: List<LyricCopyGroup>): List<LyricCopyGroup> =
+        groups.filter { it.songKey == null }
+
+    /**
      * 组名。名字里刻意不叫 `titleOf` —— 那会和 [group] 的入参 lambda 撞名，
      * 调用处解析到的是 lambda 而不是这个函数（编译器只会报「参数个数不对」）。
      */

@@ -1,7 +1,9 @@
 package com.melody.player.ui.player
 
 import androidx.compose.runtime.Immutable
+import com.melody.player.core.AlbumGroup
 import com.melody.player.core.ArchivedEntry
+import com.melody.player.core.ArtistGroup
 import com.melody.player.core.ArtworkShape
 import com.melody.player.core.HiddenSongEntry
 import com.melody.player.core.LyricCopyEntry
@@ -9,6 +11,7 @@ import com.melody.player.core.LyricCopyGroup
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.Lyrics
 import com.melody.player.core.PlayMode
+import com.melody.player.core.PlayRecord
 import com.melody.player.core.Playlist
 import com.melody.player.core.Playlists
 import com.melody.player.core.Song
@@ -20,6 +23,18 @@ import com.melody.player.core.online.ITunesHit
 import com.melody.player.core.online.LyricProvider
 import com.melody.player.core.online.OnlineSong
 import com.melody.player.core.online.RegionPing
+
+/**
+ * 曲库页的浏览维度。
+ *
+ * 平铺列表在几百首以内够用，再多就只能靠搜索了；专辑 / 歌手是**按对象找歌**的
+ * 那两条路（"我想听那张专辑"而不是"我记得歌名"）。
+ */
+enum class LibraryBrowse(val label: String) {
+    SONGS("歌曲"),
+    ALBUMS("专辑"),
+    ARTISTS("歌手")
+}
 
 /**
  * 播放器界面状态。
@@ -44,6 +59,36 @@ data class PlayerUiState(
     val query: String = "",
     val searchActive: Boolean = false,
     val sort: SortMode = SortMode.TITLE,
+    /** 最近搜索过的关键词（最新的在前）；搜索框为空时列出来，点一下直接填回去。 */
+    val recentSearches: List<String> = emptyList(),
+
+    // ------------------------------------------------------------ 浏览维度
+
+    /** 平铺歌曲 / 专辑封面网格 / 歌手列表。 */
+    val browseMode: LibraryBrowse = LibraryBrowse.SONGS,
+    /** 正在查看的专辑（[AlbumGroup.key]）；null = 没进专辑页。 */
+    val openAlbumKey: String? = null,
+    /** 正在查看的歌手；null = 没进歌手页。 */
+    val openArtist: String? = null,
+    /**
+     * 按 `(专辑, 歌手)` 归并的结果，与 [filtered] 一起重算 ——
+     * 搜索时专辑网格也要跟着收窄，否则"搜到了 1 首"的专辑点进去还是满的。
+     */
+    val albumGroups: List<AlbumGroup> = emptyList(),
+    /** 按歌手归并的结果。 */
+    val artistGroups: List<ArtistGroup> = emptyList(),
+
+    // ------------------------------------------------------------ 播放历史
+
+    /**
+     * 播放历史原始记录：「最近播放」看时间、「最常听」看次数，**共用这一张表**。
+     * 纯本地、卸载即失。
+     */
+    val playHistory: List<PlayRecord> = emptyList(),
+    /** 上面那张表解析成曲目后的「最近播放」（只含曲库仍在的）。 */
+    val recentPlayedSongs: List<Song> = emptyList(),
+    /** 上面那张表解析成曲目后的「最常听」。 */
+    val mostPlayedSongs: List<Song> = emptyList(),
 
     // ------------------------------------------------------------ 自定义歌单
 
@@ -112,7 +157,29 @@ data class PlayerUiState(
     val durationMs: Long = 0L,
     /** 播放模式：顺序 / 列表循环 / 单曲循环 / 随机，由界面上的一个按钮循环切换。 */
     val playMode: PlayMode = PlayMode.SEQUENTIAL,
+    /**
+     * 播放速度倍数（变速不变调，音高由 Media3 默认保持）。**不落盘**：
+     * 为某首播客调快的速度不该在下次冷启动时静默套到所有音乐上；
+     * 而只要播放服务还活着，切歌之间是自动保持的，已经够用。
+     */
+    val playbackSpeed: Float = 1f,
+    /**
+     * 睡眠定时的到点时刻（`SystemClock.elapsedRealtime()` 系，毫秒）；null = 没设。
+     *
+     * 不落盘：重开 App 后定时器自然失效，符合"临时设一下"的直觉 ——
+     * 否则会变成"重开 App 五分钟后莫名暂停"。
+     * 倒计时的**执行**在 `PlaybackService`（跟着播放保活，不被划掉 App 影响），
+     * 这里存的只是同一个 deadline，用来画倒计时。
+     */
+    val sleepDeadlineMs: Long? = null,
     val lyrics: Lyrics = Lyrics.NONE,
+    /**
+     * 当前曲目的歌词时间轴偏移（毫秒，正 = 歌词**延后**）。
+     *
+     * 只影响 App 内的显示与高亮，**绝不写回音频文件** —— 别的播放器读到的
+     * 必须是原始时间轴。按曲记忆，切歌时从偏好里读回。
+     */
+    val lyricOffsetMs: Long = 0L,
     val lyricsLoading: Boolean = false,
     /** 该曲是否使用用户在 App 内选定的歌词（私有副本：本地文件或联网版本）。 */
     val lyricsImported: Boolean = false,
@@ -237,6 +304,14 @@ data class PlayerUiState(
      * 从单曲入口点开就会列出一堆不相干的歌。
      */
     val lyricCopyRequestKeys: Set<String>? = null,
+    /**
+     * 「歌词副本」弹层是否在看**全部**副本（含认不回歌曲的孤儿）。
+     *
+     * 与 [lyricCopyRequestKeys] 并存而不是合并成一个字段：其余三个入口都有"作用对象"
+     * （用户刚点的那几首），而从设置页进来的全局入口**没有对象可言** ——
+     * 用一个布尔比硬塞一个"全集 key 集合"诚实，也不会在曲库变化时对不上。
+     */
+    val lyricCopyShowAll: Boolean = false,
     /** 正在预览的那份副本正文；null 表示没开预览。 */
     val lyricPreview: LyricCopyPreview? = null,
     val archiving: Boolean = false,
@@ -269,6 +344,15 @@ data class PlayerUiState(
     val hasLibrary: Boolean get() = songs.isNotEmpty()
 
     val isQueueEmpty: Boolean get() = queue.isEmpty()
+
+    /** 当前打开的专辑；key 对不上（列表刷新后专辑没了）时为 null，界面自动退回网格。 */
+    val openAlbum: AlbumGroup? get() = albumGroups.firstOrNull { it.key == openAlbumKey }
+
+    /** 当前打开的歌手。 */
+    val openArtistGroup: ArtistGroup? get() = artistGroups.firstOrNull { it.key == openArtist }
+
+    /** 是否停在专辑 / 歌手详情里 —— 返回键编排要据此决定"先退这一层再退 App"。 */
+    val browseDetailOpen: Boolean get() = openAlbumKey != null || openArtist != null
 
     /** 是否处于批量选择模式（选中了至少一首）。 */
     val selectionMode: Boolean get() = selection.isNotEmpty()

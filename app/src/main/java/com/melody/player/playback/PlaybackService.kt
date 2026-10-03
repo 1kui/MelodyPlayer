@@ -11,6 +11,14 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.melody.player.MainActivity
 import com.melody.player.R
+import com.melody.player.core.SleepTimer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 /**
  * 承载播放器的前台服务。
@@ -24,6 +32,14 @@ import com.melody.player.R
 class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
+
+    /**
+     * 服务自己的协程作用域。
+     *
+     * 睡眠定时的倒计时跑在这里而**不是**界面的 `viewModelScope`：那一个是 Activity
+     * 作用域的，用户划掉 App 就没了，而"戴着耳机睡着"恰恰是划掉 App 之后才发生的。
+     */
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
@@ -51,6 +67,21 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         mediaSession = session
+
+        // 睡眠定时：界面把"到点时刻"放进 SleepTimerHost，这里负责等到点后暂停。
+        // collectLatest 的好处是"改一次定时"会直接取消上一个等待，不需要额外维护取消逻辑。
+        serviceScope.launch {
+            SleepTimerHost.deadlineMs.collectLatest { deadline ->
+                if (deadline == null) return@collectLatest
+                val left = SleepTimer.remaining(deadline, SleepTimerHost.now())
+                if (left > 0L) delay(left)
+                val player = mediaSession?.player
+                // 到点只 **pause** 、不停服务：通知、队列与播放位置全部留着，用户睁眼
+                // 一键就能续播。若用户在到点前已经自己暂停过，这里什么都不做 —— 暂停 ≠ 取消。
+                if (player != null && player.isPlaying) player.pause()
+                SleepTimerHost.set(null)
+            }
+        }
 
         // 必须在 Provider 之前建渠道：Android 不允许事后调高已存在渠道的 importance，
         // 所以那个 HIGH 级别只能在这一刻抢下来（见 CHANNEL_ID）
@@ -84,6 +115,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         mediaSession?.run {
             player.release()
             release()

@@ -48,10 +48,19 @@ import com.melody.player.ui.icons.MelodyIcons
  * 认不回歌曲的副本（歌词索引丢了）没有别的入口 —— 设置页那份"看全部"的清单
  * 这一版已经拆掉。所以它们永远跟着出现，并在组头上写明"只能删"，
  * 而不是变成磁盘上永远清不掉的死角（见 `LyricCopyGroups.restrict`）。
+ *
+ * ## 两种口径（[showAll]）
+ * 默认是**按对象**的：用户在曲库行 / 播放页点名了哪几首，就看那几首
+ * （走 `restrict`，孤儿也一并带出来）。
+ * 设置页进来的那份是**全局**的：没有点名对象，列的是磁盘上所有副本 ——
+ * 这时标题与副标题换成全库口径（"共 N 份 · M 首"，不写"已选"），
+ * 并多出一个「清理未关联副本」的出口。两种口径共用一个弹层，
+ * 是因为它们的**形态**完全一样（组头 + 组内条目 + 删除），
+ * 而各写一份就会有两套栅格和两套删除确认。
  */
 @Composable
 fun LyricCopiesSheet(
-    /** 已经筛过的那几组（调用方走 `LyricCopyGroups.restrict`）。 */
+    /** 已经筛过的那几组（按对象时走 `LyricCopyGroups.restrict`）。 */
     groups: List<LyricCopyGroup>,
     /** 用户点名了几首歌（用于"已选 N 首"的措辞；组数可能比它少）。 */
     requestedCount: Int,
@@ -59,37 +68,76 @@ fun LyricCopiesSheet(
     onDelete: (LyricCopyEntry) -> Unit,
     onDeleteGroup: (LyricCopyGroup) -> Unit,
     onDeleteAllShown: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** 全局口径：没有"点名的那几首"，标题与副标题换成全库说法。 */
+    showAll: Boolean = false,
+    /**
+     * 全局口径下「清理未关联副本」的动作；没有孤儿时传 null（按钮就不出现）。
+     *
+     * 只删认不回歌曲的那几组 —— 与「删除以上全部」是两个量级，
+     * 所以两者都留，各自写明删多少份。
+     */
+    onDeleteOrphans: (() -> Unit)? = null
 ) {
     val entries = groups.flatMap { it.entries }
+    val orphanEntries = groups.filter { it.songKey == null }.sumOf { it.count }
     MelodyListSheet(
         title = "歌词副本",
-        subtitle = lyricCopiesSummary(groups, requestedCount).ifBlank { null },
+        subtitle = lyricCopiesSummary(groups, requestedCount, showAll).ifBlank { null },
         onDismiss = onDismiss,
         // 只有一份时"删除以上全部"与那一行自己的删除键是同一件事，不必再来一个
-        footer = if (entries.size > 1) {
-            {
-                SheetFooterButton(
-                    text = "删除以上全部副本（${entries.size} 份）",
-                    danger = true,
-                    onClick = onDeleteAllShown
-                )
+        footer = when {
+            entries.size <= 1 && (onDeleteOrphans == null || orphanEntries == 0) -> null
+            else -> {
+                {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        if (onDeleteOrphans != null && orphanEntries > 0) {
+                            SheetFooterButton(
+                                text = "清理未关联副本（$orphanEntries 份）",
+                                danger = true,
+                                onClick = onDeleteOrphans
+                            )
+                        }
+                        if (entries.size > 1) {
+                            SheetFooterButton(
+                                text = "删除以上全部副本（${entries.size} 份）",
+                                danger = true,
+                                onClick = onDeleteAllShown
+                            )
+                        }
+                    }
+                }
             }
-        } else {
-            null
         }
     ) {
         if (entries.isEmpty()) {
             Text(
-                text = "这几首现在没有歌词副本。\n\n" +
-                    "原文件被删、文件夹授权失效、歌词标签没写进文件里的时候，" +
-                    "存在这里的副本就是仅存的一份 —— 这也是它值得留着的原因。",
+                text = if (showAll) {
+                    "App 里现在一份歌词副本都没有。\n\n" +
+                        "导入的 .lrc、联网获取的歌词、归档时留下的快照都会存在这里；" +
+                        "原文件被删或文件夹授权失效时，它就是仅存的一份。"
+                } else {
+                    "这几首现在没有歌词副本。\n\n" +
+                        "原文件被删、文件夹授权失效、歌词标签没写进文件里的时候，" +
+                        "存在这里的副本就是仅存的一份 —— 这也是它值得留着的原因。"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
             )
         } else {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (showAll && orphanEntries > 0) {
+                    // 全局视图里先说清孤儿是什么：它们和上面那些"某首歌的副本"
+                    // 不是一类东西，不说这句用户会以为歌词索引坏了是件常事
+                    Text(
+                        text = "认不回歌曲的副本排在最后：它们的歌词索引已经丢失，" +
+                            "既没法预览关联、也不会再被播放用到，只能删。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 10.dp)
+                    )
+                }
                 groups.forEach { group ->
                     LyricCopyGroupBlock(
                         group = group,
@@ -225,13 +273,28 @@ private val EntryInset = 61.dp
  *
  * 点名的歌一首都没有副本时返回空串（调用方据此不画副标题）——
  * 那儿已经有一整段空状态说明，再顶一行"共 0 份"是重复。
+ *
+ * [showAll] 是全局口径：写"几首歌 + 几份孤儿"，而不是"已选 N 首" ——
+ * 全局视图根本没有"选"这个动作，照抄按对象那套措辞会让人以为漏了点什么。
  */
-internal fun lyricCopiesSummary(groups: List<LyricCopyGroup>, requestedCount: Int): String {
+internal fun lyricCopiesSummary(
+    groups: List<LyricCopyGroup>,
+    requestedCount: Int,
+    showAll: Boolean = false
+): String {
     val entries = groups.flatMap { it.entries }
     if (entries.isEmpty()) return ""
     return buildString {
-        if (requestedCount > 1) append("已选 $requestedCount 首 · ")
-        append("共 ${entries.size} 份 · ")
+        if (showAll) {
+            val songs = groups.count { it.songKey != null }
+            val orphans = groups.count { it.songKey == null }
+            append("$songs 首歌 · 共 ${entries.size} 份")
+            if (orphans > 0) append(" · 其中 $orphans 份认不回歌曲")
+        } else {
+            if (requestedCount > 1) append("已选 $requestedCount 首 · ")
+            append("共 ${entries.size} 份")
+        }
+        append(" · ")
         append(FileNames.size(entries.sumOf { it.sizeBytes }))
         val auto = entries.count { it.autoMatched }
         // 自动匹配那份删了还会再取回来，和"选定"那份不是一回事，得说清

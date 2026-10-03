@@ -30,9 +30,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.melody.player.core.TextHighlight
 import com.melody.player.ui.icons.MelodyIcons
 
 /**
@@ -74,6 +80,32 @@ fun IconAction(
             modifier = Modifier.size(iconSize),
             tint = if (enabled) tint else tint.copy(alpha = 0.38f)
         )
+    }
+}
+
+/**
+ * 把 [text] 里命中 [query] 的部分染成 [color] 并加粗，其余保持原样。
+ *
+ * 命中区间的计算在 `core/TextHighlight`（纯函数、有单测）；这里只负责**画**。
+ * 拆成两步是因为"哪几个字算命中"是能被测错的逻辑（大小写、重叠、土耳其语 İ 的下标），
+ * 而"染成什么颜色"是纯装饰 —— 混在一起就只能靠真机肉眼看。
+ *
+ * 空白关键词返回原文（`AnnotatedString(text)`），所以调用方不必自己判断
+ * "现在是不是在搜索" —— 传空串等于不高亮。
+ */
+fun highlightRanges(text: String, query: String, color: Color): AnnotatedString {
+    val ranges = TextHighlight.ranges(text, query)
+    if (ranges.isEmpty()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        var cursor = 0
+        ranges.forEach { range ->
+            append(text.substring(cursor, range.start))
+            withStyle(SpanStyle(color = color, fontWeight = FontWeight.SemiBold)) {
+                append(text.substring(range.start, range.endExclusive))
+            }
+            cursor = range.endExclusive
+        }
+        append(text.substring(cursor))
     }
 }
 

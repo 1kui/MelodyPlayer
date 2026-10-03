@@ -16,11 +16,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,8 +48,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.melody.player.core.AlbumGroup
+import com.melody.player.core.ArtistGroup
 import com.melody.player.core.BatchOps
 import com.melody.player.core.FileNames
 import com.melody.player.core.Playlist
@@ -56,9 +62,11 @@ import com.melody.player.core.SortMode
 import com.melody.player.ui.components.EmptyState
 import com.melody.player.ui.components.IconAction
 import com.melody.player.ui.components.MelodyActionSheet
+import com.melody.player.ui.components.PillSwitcher
 import com.melody.player.ui.components.SheetAction
 import com.melody.player.ui.components.SongRow
 import com.melody.player.ui.icons.MelodyIcons
+import com.melody.player.ui.player.LibraryBrowse
 import com.melody.player.ui.player.PlayerUiState
 
 /**
@@ -397,7 +405,24 @@ fun LibraryContent(
      * 单曲行菜单与多选批量条共用这一个回调：作用对象由调用方给，
      * 弹层不自己去读当前选择 —— 从单曲入口点开时，选中的可能是别的几首。
      */
-    onManageLyricCopies: (keys: Set<String>) -> Unit = {}
+    onManageLyricCopies: (keys: Set<String>) -> Unit = {},
+    /** 切换浏览维度（歌曲 / 专辑 / 歌手）。 */
+    onBrowseModeChange: (LibraryBrowse) -> Unit = {},
+    /** 点开一张专辑 / 一位歌手。 */
+    onOpenAlbum: (AlbumGroup) -> Unit = {},
+    onOpenArtist: (ArtistGroup) -> Unit = {},
+    /** 从专辑 / 歌手详情退回上一层。 */
+    onCloseBrowseDetail: () -> Unit = {},
+    /** 把一整批曲目作为队列播放（专辑页的「全部播放」、榜单卡片的「全部播放」）。 */
+    onPlaySongs: (songs: List<Song>, startIndex: Int) -> Unit = { _, _ -> },
+    /** 把一整批曲目**追加**到播放队列末尾（专辑页的「加入队列」）。 */
+    onEnqueueSongs: (songs: List<Song>) -> Unit = {},
+    /** 记一条最近搜索（点"最近搜索"里的词时也要记一次，把它顶到最前）。 */
+    onRememberSearch: (String) -> Unit = {},
+    /** 忘掉一条最近搜索。 */
+    onForgetSearch: (String) -> Unit = {},
+    /** 清空最近搜索。 */
+    onClearRecentSearches: () -> Unit = {}
 ) {
     // 取消归档会删掉 App 库里那份副本（原文件已不在时它就是仅存的一份），
     // 所以从行菜单进来也必须先确认一次，不能点一下就没
@@ -442,6 +467,56 @@ fun LibraryContent(
     } else {
         SongQuery.filter(state.playlistSongs, state.query)
     }
+
+    // ------------------------------------------------------------ 回访与维度
+
+    /**
+     * 当前看的是哪个回访榜单。
+     *
+     * 本地 `remember` 而不是进 `PlayerUiState`：这是"我现在想翻哪一个"的临时视角，
+     * 关掉 App 再回来该回到「最近播放」—— 记住上次翻到「最常听」只会让人莫名其妙。
+     */
+    var board by remember { mutableStateOf(HistoryBoard.RECENT) }
+    val boardSongs = if (board == HistoryBoard.RECENT) {
+        state.recentPlayedSongs
+    } else {
+        state.mostPlayedSongs
+    }
+
+    val albumGridState = rememberLazyGridState()
+
+    /**
+     * 详情页每一行的动作包。`remember` 起来是因为它要传给两个详情页 ——
+     * 每帧新建一个，下游那一大片 `SongRow` 就没法跳过重组。
+     */
+    val songActions = remember(
+        onPlayNext,
+        onHideSong,
+        onFetchCover,
+        onEditSong,
+        onAddToPlaylist,
+        onRequestEmbed,
+        onReparseEmbedded,
+        onManageLyricCopies,
+        onArchiveSong,
+        onUnarchiveSong
+    ) {
+        LibrarySongActions(
+            onPlayNext = onPlayNext,
+            onHideSong = onHideSong,
+            onFetchCover = onFetchCover,
+            onEditSong = onEditSong,
+            onAddToPlaylist = onAddToPlaylist,
+            onRequestEmbed = { onRequestEmbed(setOf(it.key)) },
+            onReparseEmbedded = { onReparseEmbedded(setOf(it.key)) },
+            onManageLyricCopies = { onManageLyricCopies(setOf(it.key)) },
+            onArchiveSong = onArchiveSong,
+            onUnarchiveSong = onUnarchiveSong
+        )
+    }
+
+    val openAlbum = state.openAlbum
+    val openArtist = state.openArtistGroup
 
     pendingUnarchive?.let { song ->
         AlertDialog(
@@ -514,14 +589,60 @@ fun LibraryContent(
             onCreate = onCreatePlaylist
         )
 
+        // 维度切换。**歌单视图里不出现**：歌单是"我挑出来的这几首"，
+        // 再按专辑/歌手拆一遍它，用户手排的顺序就没了 —— 而那正是歌单的意义。
+        // 详情页里也不出现：那时屏幕上已经有"返回"，再摆一个分段控件等于两个出口。
+        if (!inPlaylist && !state.browseDetailOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                PillSwitcher(
+                    options = LibraryBrowse.entries.toList(),
+                    selected = state.browseMode,
+                    labelOf = { it.label },
+                    iconOf = {
+                        when (it) {
+                            LibraryBrowse.SONGS -> MelodyIcons.MusicNote
+                            LibraryBrowse.ALBUMS -> MelodyIcons.Album
+                            LibraryBrowse.ARTISTS -> MelodyIcons.Artist
+                        }
+                    },
+                    // 换维度就把多选清掉：多选只对"歌曲"那一张平铺列表有意义，
+                    // 带着它切到专辑网格，底部那条批量操作条会指着一批网格里看不见的歌
+                    onSelect = {
+                        onClearSelection()
+                        onBrowseModeChange(it)
+                    }
+                )
+            }
+        }
+
         if (state.searchActive) {
             SearchField(
                 query = state.query,
                 onQueryChange = onQueryChange,
+                onRememberSearch = onRememberSearch,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp)
             )
+            // 搜索框空着的时候才铺最近搜索：一边打字一边还挂着历史词条，
+            // 既挡结果又没用（用户已经知道自己要搜什么了）
+            if (state.query.isBlank() && state.recentSearches.isNotEmpty()) {
+                RecentSearchChips(
+                    keywords = state.recentSearches,
+                    onPick = { keyword ->
+                        onQueryChange(keyword)
+                        // 点历史词也算一次搜索：把它顶到最前，下次还在最顺手的位置
+                        onRememberSearch(keyword)
+                    },
+                    onForget = onForgetSearch,
+                    onClearAll = onClearRecentSearches
+                )
+            }
         }
 
         Box(modifier = Modifier.weight(1f)) {
@@ -592,83 +713,150 @@ fun LibraryContent(
                     modifier = Modifier.align(Alignment.Center)
                 )
 
-                else -> LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        top = 4.dp,
-                        bottom = contentPadding.calculateBottomPadding() + 16.dp
+                else -> when {
+                    // ---------------------------------------------------- 专辑 / 歌手详情
+                    // 放在最前面：详情是"从网格进去的下一层"，它应该盖过维度判断 ——
+                    // 否则在专辑网格里点开一张专辑，屏幕上还会按 browseMode 画网格
+                    !inPlaylist && openAlbum != null -> AlbumDetail(
+                        album = openAlbum.album,
+                        artist = openAlbum.artist,
+                        songs = openAlbum.songs,
+                        state = state,
+                        actions = songActions,
+                        contentPadding = contentPadding,
+                        onBack = onCloseBrowseDetail,
+                        onPlayAll = { onPlaySongs(openAlbum.songs, 0) },
+                        onEnqueueAll = { onEnqueueSongs(openAlbum.songs) },
+                        onPlayFrom = { index -> onPlaySongs(openAlbum.songs, index) }
                     )
-                ) {
-                    if (state.query.isNotBlank()) {
-                        item(key = "search-header") {
-                            Text(
-                                text = "找到 ${shown.size} 首与「${state.query}」相关的曲目",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+
+                    !inPlaylist && openArtist != null -> ArtistDetail(
+                        artist = openArtist.artist,
+                        songs = openArtist.songs,
+                        state = state,
+                        actions = songActions,
+                        contentPadding = contentPadding,
+                        onBack = onCloseBrowseDetail,
+                        onPlayAll = { onPlaySongs(openArtist.songs, 0) },
+                        onEnqueueAll = { onEnqueueSongs(openArtist.songs) },
+                        onPlayFrom = { index -> onPlaySongs(openArtist.songs, index) }
+                    )
+
+                    // -------------------------------------------------------- 专辑网格
+                    !inPlaylist && state.browseMode == LibraryBrowse.ALBUMS -> AlbumGrid(
+                        albums = state.albumGroups,
+                        state = albumGridState,
+                        highlight = state.query,
+                        contentPadding = contentPadding,
+                        onOpen = onOpenAlbum
+                    )
+
+                    // -------------------------------------------------------- 歌手列表
+                    !inPlaylist && state.browseMode == LibraryBrowse.ARTISTS -> ArtistList(
+                        artists = state.artistGroups,
+                        contentPadding = contentPadding,
+                        highlight = state.query,
+                        onOpen = onOpenArtist
+                    )
+
+                    else -> LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            top = 4.dp,
+                            bottom = contentPadding.calculateBottomPadding() + 16.dp
+                        )
+                    ) {
+                        // -------------------------------------------------- 回访榜单
+                        // 只在"整库的歌曲视图"里出现：搜索时用户心里已经有目标，
+                        // 歌单里他要的是自己排的那几首 —— 两种情况下推荐别的都是打扰。
+                        if (!state.searchActive && !inPlaylist && !state.browseDetailOpen) {
+                            item(key = "history") {
+                                HistorySection(
+                                    board = board,
+                                    songs = boardSongs,
+                                    recentCount = state.recentPlayedSongs.size,
+                                    mostCount = state.mostPlayedSongs.size,
+                                    onBoardChange = { board = it },
+                                    onPlayAt = { index -> onPlaySongs(boardSongs, index) },
+                                    onPlayAll = { onPlaySongs(boardSongs, 0) },
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                            }
+                        }
+
+                        if (state.query.isNotBlank()) {
+                            item(key = "search-header") {
+                                Text(
+                                    text = "找到 ${shown.size} 首与「${state.query}」相关的曲目",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+                        items(items = shown, key = { it.key }) { song ->
+                            // 序号与所有针对歌单的操作一律用歌单里的下标
+                            val rowIndex = if (inPlaylist) playlistIndexOf(song) else shown.indexOf(song)
+                            SongRow(
+                                song = song,
+                                index = rowIndex,
+                                isCurrent = state.currentSong?.key == song.key,
+                                isPlaying = state.isPlaying,
+                                // 高亮只在真的在搜索时给：空串等于不高亮（见 highlightRanges）
+                                highlight = if (state.searchActive) state.query else "",
+                                onClick = {
+                                    if (inPlaylist) onPlaylistSongClick(rowIndex)
+                                    else onSongClick(song)
+                                },
+                                onPlayNext = {
+                                    if (inPlaylist) onPlaylistSongClick(rowIndex)
+                                    else onPlayNext(song)
+                                },
+                                onHide = { onHideSong(song) },
+                                onFetchCover = { onFetchCover(song) },
+                                onEmbedTags = { onRequestEmbed(setOf(song.key)) },
+                                onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
+                                onManageLyricCopies = { onManageLyricCopies(setOf(song.key)) },
+                                onEditSong = { onEditSong(song) },
+                                onArchive = if (song.archived) null else {
+                                    { onArchiveSong(song) }
+                                },
+                                onUnarchive = if (song.archived) {
+                                    { pendingUnarchive = song }
+                                } else {
+                                    null
+                                },
+                                // 「加入歌单」只在整库里出现：已经在歌单里还问"要不要加"，是句废话
+                                onAddToPlaylist = if (inPlaylist) null else {
+                                    { onAddToPlaylist(song) }
+                                },
+                                onMoveUp = if (inPlaylist && rowIndex > 0) {
+                                    { onMovePlaylistSong(rowIndex, -1) }
+                                } else {
+                                    null
+                                },
+                                onMoveDown = if (inPlaylist && rowIndex < playlist.songKeys.lastIndex) {
+                                    { onMovePlaylistSong(rowIndex, 1) }
+                                } else {
+                                    null
+                                },
+                                onRemoveFromPlaylist = if (inPlaylist) {
+                                    { onRemoveFromPlaylist(song) }
+                                } else {
+                                    null
+                                },
+                                archived = song.archived,
+                                onRemove = if (song.imported) {
+                                    { onRemoveImported(song) }
+                                } else {
+                                    null
+                                },
+                                selected = if (state.selectionMode) song.key in state.selection else null,
+                                onToggleSelect = { onToggleSelect(song) },
+                                onBeginSelection = { onBeginSelection(song) }
                             )
                         }
-                    }
-                    items(items = shown, key = { it.key }) { song ->
-                        // 序号与所有针对歌单的操作一律用歌单里的下标
-                        val rowIndex = if (inPlaylist) playlistIndexOf(song) else shown.indexOf(song)
-                        SongRow(
-                            song = song,
-                            index = rowIndex,
-                            isCurrent = state.currentSong?.key == song.key,
-                            isPlaying = state.isPlaying,
-                            onClick = {
-                                if (inPlaylist) onPlaylistSongClick(rowIndex)
-                                else onSongClick(song)
-                            },
-                            onPlayNext = {
-                                if (inPlaylist) onPlaylistSongClick(rowIndex)
-                                else onPlayNext(song)
-                            },
-                            onHide = { onHideSong(song) },
-                            onFetchCover = { onFetchCover(song) },
-                            onEmbedTags = { onRequestEmbed(setOf(song.key)) },
-                            onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
-                            onManageLyricCopies = { onManageLyricCopies(setOf(song.key)) },
-                            onEditSong = { onEditSong(song) },
-                            onArchive = if (song.archived) null else {
-                                { onArchiveSong(song) }
-                            },
-                            onUnarchive = if (song.archived) {
-                                { pendingUnarchive = song }
-                            } else {
-                                null
-                            },
-                            // 「加入歌单」只在整库里出现：已经在歌单里还问"要不要加"，是句废话
-                            onAddToPlaylist = if (inPlaylist) null else {
-                                { onAddToPlaylist(song) }
-                            },
-                            onMoveUp = if (inPlaylist && rowIndex > 0) {
-                                { onMovePlaylistSong(rowIndex, -1) }
-                            } else {
-                                null
-                            },
-                            onMoveDown = if (inPlaylist && rowIndex < playlist.songKeys.lastIndex) {
-                                { onMovePlaylistSong(rowIndex, 1) }
-                            } else {
-                                null
-                            },
-                            onRemoveFromPlaylist = if (inPlaylist) {
-                                { onRemoveFromPlaylist(song) }
-                            } else {
-                                null
-                            },
-                            archived = song.archived,
-                            onRemove = if (song.imported) {
-                                { onRemoveImported(song) }
-                            } else {
-                                null
-                            },
-                            selected = if (state.selectionMode) song.key in state.selection else null,
-                            onToggleSelect = { onToggleSelect(song) },
-                            onBeginSelection = { onBeginSelection(song) }
-                        )
                     }
                 }
             }
@@ -676,7 +864,10 @@ fun LibraryContent(
 
         // 批量操作条压在列表底部。多选时才出现 —— 它是"对选中的那几首做什么"的入口，
         // 平时占着位置只会让列表看起来永远有东西挡着。
-        if (state.selectionMode) {
+        //
+        // 只在"歌曲"这一张平铺列表上出现：专辑/歌手详情或网格里选中了几首，
+        // 这条"已选 N 首"就指着一批屏幕上根本看不见的歌，没法核对。
+        if (state.selectionMode && !state.browseDetailOpen && state.browseMode == LibraryBrowse.SONGS) {
             BatchActionBar(
                 count = state.selectedCount,
                 selectAllClears = BatchOps.selectAllTogglesOff(
@@ -852,10 +1043,78 @@ private fun LoadingState(scanLabel: String = "") {
     }
 }
 
+/**
+ * 最近搜索的词条。
+ *
+ * 只在搜索框**空着**时铺出来（调用方判断）：一边打字一边还挂着历史词条，
+ * 既挡结果又没用 —— 用户已经知道自己要搜什么了。
+ *
+ * 每条右边带一个 ×，可以单独忘掉；末尾一颗「清空」一次抹掉全部。
+ * 单独忘掉很有必要：搜过一次的错别字（"周杰轮"）会一直占着最前面，
+ * 而只给"全部清空"的话，用户为了去掉它得把有用的那几条也一起丢掉。
+ */
+@Composable
+private fun RecentSearchChips(
+    keywords: List<String>,
+    onPick: (String) -> Unit,
+    onForget: (String) -> Unit,
+    onClearAll: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 标签放在滚动行**外面**：放进 Row 里会跟着一起滚走，
+        // 而它正是用来回答"这一排词是什么"的
+        Text(
+            text = "最近搜索",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 20.dp, top = 2.dp)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            keywords.forEach { keyword ->
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clickable { onPick(keyword) }
+                            .padding(start = 12.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = keyword,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                        IconAction(
+                            imageVector = MelodyIcons.Close,
+                            contentDescription = "忘掉「$keyword」",
+                            onClick = { onForget(keyword) },
+                            iconSize = 13.dp,
+                            touchSize = 28.dp,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            TextButton(onClick = onClearAll) { Text("清空") }
+        }
+    }
+}
+
 @Composable
 private fun SearchField(
     query: String,
     onQueryChange: (String) -> Unit,
+    onRememberSearch: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -885,6 +1144,11 @@ private fun SearchField(
                     color = MaterialTheme.colorScheme.onSurface
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                // 键盘上的搜索键是"最近搜索"唯一的写入时机（点历史词那条是补充）。
+                // 不接这个动作的话，recentSearches 永远是空的 —— 而空白串会被
+                // RecentSearches.push 原样丢掉，所以这里不必再判一次空。
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onRememberSearch(query) }),
                 decorationBox = { innerTextField ->
                     Box {
                         if (query.isEmpty()) {
