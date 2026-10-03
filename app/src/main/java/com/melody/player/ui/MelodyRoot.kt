@@ -348,7 +348,6 @@ fun MelodyRoot(
                             contentPadding = bottomPadding,
                             onPlayIndex = { index -> vm.playAll(state.queue, index) },
                             onRemoveIndex = vm::removeFromQueue,
-                            onDragIndex = { from, to -> vm.moveInQueue(from, to, announce = false) },
                             onMoveIndex = vm::moveInQueue
                         )
 

@@ -1,5 +1,8 @@
 package com.melody.player.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -32,8 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -49,6 +52,7 @@ import com.melody.player.ui.components.SongArtwork
 import com.melody.player.ui.components.SongRow
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -86,19 +90,25 @@ fun QueueTopBar(
 }
 
 /**
- * 播放队列，支持**长按拖动排序**。
+ * 播放队列，支持**长按拖到任意位置**。
  *
- * ## 为什么拖动要自己写，而不是靠现成组件
- * 依赖清单是刻意压到最低的（无第三方标签库、无拖拽库），所以这套手势在这里实现。
- * 真正难的不是"跟着手指动"，而是三件事：
- *  1. **算目标位置**：不能只看"手指现在压在谁身上"，而要看被拖行**跨过了谁的中心线**。
- *     差半行就该换位，差一点点就换位会让列表抖个不停。
- *  2. **换位后补偿偏移**：换位会重排，被拖行的新基准位置变了，拖动偏移必须跟着减去
- *     一段距离，否则它会在松手前"跳"一下。
- *  3. **拖动时给出反馈**：放大 + 触觉 + 其它行变淡，否则用户不知道松手会落在哪。
+ * ## 拖动模型：拖动期间不重排真实队列，松手才提交
+ * 这是这份实现里唯一的"设计决定"，其余都是它的推论。
  *
- * [onMoveIndex] 每次换位都会立刻改真正的播放队列（见 `PlayerViewModel.moveInQueue`），
- * 所以拖动过程中听到的顺序变化是真实生效的，不是松手才生效。
+ * 早期版本在 `onDrag` 里每一次越位都调 `moveInQueue`，看起来"顺序立刻生效"很酷，
+ * 但它同时踩了三个坑：
+ *  1. `state.queue` 变了而 `listState.layoutInfo` 要到下一帧才更新，同一帧内
+ *     会被同一次拖动再判一次 —— 行在两格之间来回横跳。
+ *  2. 换位后行下标变了，而 `pointerInput(index)` 的 key 里带着下标 →
+ *     手势被取消重建，拖动当场断掉。表现就是"一次只能挪一格，挪完还得重新按"。
+ *  3. 拖动期间还要维护"换位补偿偏移"（`dragOffsetY += ±行高`），行高一不等就错。
+ *
+ * 改成松手提交之后，**布局在拖动全程不动**：
+ *  - 被拖行用 [graphicsLayer] 的 `translationY` 直接跟手，没有基准位置变化，
+ *    自然也就不需要补偿；
+ *  - 目标位置由"被拖中心的屏幕坐标落在哪个槽位"直接算出，一次可以跨任意多格；
+ *  - 其它行按区间做让位位移，用户能预判松手会落到哪；
+ *  - 松手时只调**一次** [onMoveIndex]，真实队列与播放器下标只重排一次。
  */
 @Composable
 fun QueueContent(
@@ -108,8 +118,6 @@ fun QueueContent(
     onPlayIndex: (Int) -> Unit,
     onRemoveIndex: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    /** 拖动排序专用：中途换位不弹提示（[PlayerViewModel.moveInQueue] 的 announce = false）。 */
-    onDragIndex: (from: Int, to: Int) -> Unit = { _, _ -> },
     onMoveIndex: (Int, Int) -> Unit = { _, _ -> }
 ) {
     if (state.queue.isEmpty()) {
@@ -127,10 +135,36 @@ fun QueueContent(
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    // 正在被拖动的那一行；null 表示当前没有拖动
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    // 手指相对这一行原始位置的纵向偏移
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    // ---------------- 拖动会话状态 ----------------
+
+    /** 被拖歌曲的 key；null 表示当前没有拖动。用 key 而不是下标：下标在提交时会变。 */
+    var draggedKey by remember { mutableStateOf<String?>(null) }
+
+    /** 拖动开始时它在队列里的位置，也是松手提交时的 from。全程不变。 */
+    var dragFromIndex by remember { mutableIntStateOf(-1) }
+
+    /** 按住那一刻，被拖行在屏幕上的中心（列表坐标系）。 */
+    var dragAnchorCenter by remember { mutableFloatStateOf(0f) }
+
+    /** 手指相对按下点的累计纵向位移。 */
+    var dragDeltaY by remember { mutableFloatStateOf(0f) }
+
+    /** 当前算出的目标槽位；-1 表示没在拖动。 */
+    var dragTargetIndex by remember { mutableIntStateOf(-1) }
+
+    /**
+     * 抑制松手那一下被当成单击。
+     *
+     * 行的 `clickable` 与这里的长按拖动是两个识别器。只要拖动**动过**，
+     * 拖动侧就会 `consume` 掉移动事件，`clickable` 自己会取消；但如果长按之后
+     * 手指几乎没动（不到 touch slop）就松手，`clickable` 会认为这是一次普通点击 → 播放。
+     * 而此刻队列可能刚重排过，[index] 指向的早已不是原来那首歌 ——
+     * 表现就是"拖完自动播了另一首"。
+     *
+     * 抑制必须从 `onDragStart`（长按判定成功那一刻）就开始：
+     * `clickable` 的 onClick 与 `onDragEnd` 都在抬手时触发，**谁先谁后没有保证**。
+     */
+    var suppressPlay by remember { mutableStateOf(false) }
 
     /**
      * 队列上方的头部占了几个 item。
@@ -141,9 +175,49 @@ fun QueueContent(
      */
     val headerCount = if (state.currentSong != null) 3 else 0
 
-    fun clearDrag() {
-        draggingIndex = null
-        dragOffsetY = 0f
+    /** 只保留曲目行，并把 LazyColumn 下标换算成队列下标。 */
+    fun visibleRows(): List<RowLayout> = listState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
+        val queueIndex = item.index - headerCount
+        if (queueIndex in state.queue.indices) {
+            RowLayout(queueIndex, item.offset, item.offset + item.size, item.size)
+        } else {
+            null
+        }
+    }
+
+    fun resetDrag() {
+        draggedKey = null
+        dragFromIndex = -1
+        dragTargetIndex = -1
+        dragDeltaY = 0f
+        dragAnchorCenter = 0f
+    }
+
+    /** 松手后再静默一小段，让 `clickable` 的那次 onClick 落空。 */
+    fun releaseSuppressPlay() {
+        scope.launch {
+            delay(300)
+            suppressPlay = false
+        }
+    }
+
+    // ---------------- 拖动中的派生量（渲染用） ----------------
+
+    val dragging = draggedKey != null
+    val rows = if (dragging) visibleRows() else emptyList()
+    val draggedRowHeight = rows.firstOrNull { state.queue.getOrNull(it.index)?.key == draggedKey }
+        ?.size?.toFloat() ?: 0f
+
+    /**
+     * 被拖行当前的中心（屏幕坐标）。
+     *
+     * 夹在可见行的首尾中心之间：否则行会飘到"正在播放"卡片上或列表外面去。
+     * 夹住之后拖到边缘时行会"贴住"边缘，配合自动滚动就能一路把目标推到底。
+     */
+    val draggedCenter = if (dragging && rows.isNotEmpty()) {
+        (dragAnchorCenter + dragDeltaY).coerceIn(rows.first().center, rows.last().center)
+    } else {
+        0f
     }
 
     LazyColumn(
@@ -235,7 +309,7 @@ fun QueueContent(
                 Text(
                     // 拖动是这个页面的主操作，不写在空状态里（空的时候没东西可拖），
                     // 直接放在曲目区标题下面
-                    text = "长按任意一首可以拖动排序，顺序立刻生效",
+                    text = "长按任意一首拖到想要的位置，松手生效",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 20.dp, bottom = 4.dp)
@@ -244,74 +318,112 @@ fun QueueContent(
             }
         }
 
-        itemsIndexed(items = state.queue, key = { _, song -> "queue-${song.key}" }) { index, song ->
-            val dragging = draggingIndex == index
+        // key 只用下标：队列里同一首歌**可以出现多次**（「下一首播放」能反复插同一首），
+        // 用 song.key 会撞出重复 key 让 LazyColumn 直接抛异常。
+        itemsIndexed(items = state.queue, key = { index, _ -> "queue-$index" }) { index, song ->
+            val isDragged = dragging && song.key == draggedKey
+            val itemInfo = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == index + headerCount }
+            val rowCenter = itemInfo?.let { it.offset + it.size / 2f } ?: 0f
+
+            // 被拖行：绝对定位。translationY 是"相对本行布局位置"的位移，
+            // 所以直接用「目标中心 − 当前布局中心」，不需要维护任何补偿量
+            val dragTranslation = if (isDragged && itemInfo != null) draggedCenter - rowCenter else 0f
+
+            // 其余行让位：被拖行跨过的那一段整体退开一个行高，用户能看出会落到哪
+            val shiftTarget = when {
+                !dragging || isDragged -> 0f
+                dragFromIndex < dragTargetIndex && index in (dragFromIndex + 1)..dragTargetIndex ->
+                    -draggedRowHeight
+                dragTargetIndex in 0 until dragFromIndex && index in dragTargetIndex until dragFromIndex ->
+                    draggedRowHeight
+                else -> 0f
+            }
+            val shift by animateFloatAsState(
+                targetValue = shiftTarget,
+                animationSpec = tween(durationMillis = 140),
+                label = "queueRowShift"
+            )
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 拖动中的行浮在最上层，否则它会被别的行盖住，用户看不见自己拖的是谁
+                    // 被拖行浮到最上层；zIndex 必须排在 graphicsLayer 之前，
+                    // 否则抬升的层级不会作用到实际绘制的那一层
+                    .zIndex(if (isDragged) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = dragTranslation + shift
+                        // 略微放大，给一个"被拿起来了"的视觉
+                        val s = if (isDragged) 1.02f else 1f
+                        scaleX = s
+                        scaleY = s
+                        // 阴影必须画在 graphicsLayer 上：写成 Modifier.shadow(...) 的话
+                        // 它位于图层**之外**，行跟着手指走、阴影却留在原地
+                        shadowElevation = if (isDragged) 14.dp.toPx() else 0f
+                        if (isDragged) {
+                            shape = RoundedCornerShape(16.dp)
+                            clip = false
+                        }
+                    }
                     .then(
-                        if (dragging) {
-                            Modifier
-                                .zIndex(1f)
-                                .shadow(8.dp)
+                        // 被拖行要不透明：SongRow 自身没有底色，浮起来之后
+                        // 下面的行会从它身上透出来，看起来糊成一团
+                        if (isDragged) {
+                            Modifier.background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
                         } else {
                             Modifier
                         }
                     )
-                    .graphicsLayer {
-                        translationY = if (dragging) dragOffsetY else 0f
-                        // 略微放大，给一个"被拿起来了"的视觉
-                        scaleX = if (dragging) 1.02f else 1f
-                        scaleY = if (dragging) 1.02f else 1f
-                    }
-                    .pointerInput(index, state.queue.size) {
+                    .pointerInput(song.key, index, headerCount) {
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
-                                draggingIndex = index
-                                dragOffsetY = 0f
+                                val item = listState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull { it.index == index + headerCount }
+                                    ?: return@detectDragGesturesAfterLongPress
+                                draggedKey = song.key
+                                dragFromIndex = index
+                                dragTargetIndex = index
+                                dragAnchorCenter = item.offset + item.size / 2f
+                                dragDeltaY = 0f
+                                // 长按已经成立，这一次抬手就不再是"点击"了
+                                suppressPlay = true
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             },
-                            onDragCancel = { clearDrag() },
-                            onDragEnd = { clearDrag() },
+                            onDragCancel = {
+                                resetDrag()
+                                releaseSuppressPlay()
+                            },
+                            onDragEnd = {
+                                val from = dragFromIndex
+                                val to = dragTargetIndex
+                                resetDrag()
+                                releaseSuppressPlay()
+                                if (from >= 0 && to >= 0 && from != to) onMoveIndex(from, to)
+                            },
                             onDrag = { change, dragAmount ->
+                                if (draggedKey == null) return@detectDragGesturesAfterLongPress
                                 change.consume()
-                                dragOffsetY += dragAmount.y
+                                dragDeltaY += dragAmount.y
 
-                                val info = listState.layoutInfo
-                                val rowLayouts = info.visibleItemsInfo.mapNotNull { item ->
-                                    val queueIndex = item.index - headerCount
-                                    if (queueIndex !in state.queue.indices) {
-                                        null
-                                    } else {
-                                        RowLayout(queueIndex, item.offset, item.offset + item.size, item.size)
-                                    }
-                                }
-                                val dragged = rowLayouts.firstOrNull { it.index == index }
-                                if (dragged == null) return@detectDragGesturesAfterLongPress
+                                val visible = visibleRows()
+                                if (visible.isEmpty()) return@detectDragGesturesAfterLongPress
 
-                                val decision = queueDragTarget(
-                                    rows = rowLayouts,
-                                    draggingIndex = index,
-                                    draggedCenter = dragged.offset + dragOffsetY + dragged.size / 2f
-                                )
-                                if (decision != null && decision.to != index) {
-                                    onDragIndex(index, decision.to)
-                                    // 换位后被拖行的基准位置挪了，把偏移补回去，
-                                    // 否则它会在手指底下"跳"一整行
-                                    dragOffsetY += decision.compensation
-                                    draggingIndex = decision.to
+                                val raw = dragAnchorCenter + dragDeltaY
+                                val center = raw.coerceIn(visible.first().center, visible.last().center)
+
+                                // 一次跨几格都行：目标就是"被拖中心落在谁身上"
+                                val target = queueDragTarget(visible, center)
+                                if (target != dragTargetIndex && target >= 0) {
+                                    dragTargetIndex = target
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 }
 
                                 // 拖到列表边缘时自动滚动：否则长队列只能重排眼前这几屏，
                                 // 想要的那首在很下面时就完全够不着
-                                val viewport = info.viewportStartOffset to info.viewportEndOffset
-                                val center = dragged.offset + dragOffsetY + dragged.size / 2f
-                                if (center < viewport.first + EDGE_ZONE_PX) {
+                                val info = listState.layoutInfo
+                                if (center < info.viewportStartOffset + EDGE_ZONE_PX) {
                                     scope.launch { listState.scrollBy(-EDGE_SCROLL_PX) }
-                                } else if (center > viewport.second - EDGE_ZONE_PX) {
+                                } else if (center > info.viewportEndOffset - EDGE_ZONE_PX) {
                                     scope.launch { listState.scrollBy(EDGE_SCROLL_PX) }
                                 }
                             }
@@ -323,7 +435,7 @@ fun QueueContent(
                     index = index,
                     isCurrent = state.currentIndex == index,
                     isPlaying = state.isPlaying,
-                    onClick = { onPlayIndex(index) },
+                    onClick = { if (!suppressPlay) onPlayIndex(index) },
                     onPlayNext = { onPlayIndex(index) },
                     onRemove = { onRemoveIndex(index) },
                     // 长按让给外层的拖动排序：这两个手势不能同时挂在一行上
@@ -339,14 +451,8 @@ fun QueueContent(
                     } else {
                         null
                     },
-                    modifier = if (dragging) {
-                        // 拖动时把整行抬亮一点：缩放之外再加一层底色，
-                        // 在浅色主题下这层差别比阴影更容易看出来
-                        Modifier
-                    } else {
-                        // 别的行在拖动期间压暗，视线自然落到被拖的那一行
-                        Modifier.alpha(if (draggingIndex != null) 0.55f else 1f)
-                    }
+                    // 别的行在拖动期间压暗，视线自然落到被拖的那一行
+                    modifier = if (!isDragged && dragging) Modifier.alpha(0.5f) else Modifier
                 )
             }
         }
@@ -362,10 +468,10 @@ private const val EDGE_SCROLL_PX = 28f
 /**
  * 一行在屏幕上的位置（像素）。
  *
- * 只保留拖动判算真正用到的四个量：下标、顶边、底边、高度。
+ * 只保留判算真正用到的四个量：下标、顶边、底边、高度。
  * 之所以不直接传 [androidx.compose.foundation.lazy.LazyListItemInfo]，
- * 是因为那样这个函数就没法在 JVM 单测里跑了 —— 而换位判算恰恰是
- * "看起来对、实际会跳位"的高发区，必须能离线验。
+ * 是因为那样这个函数就没法在 JVM 单测里跑了 —— 而"落点算错"恰恰是
+ * 拖拽里最容易出、又最难靠肉眼复现的一类问题。
  */
 internal data class RowLayout(
     val index: Int,
@@ -376,46 +482,29 @@ internal data class RowLayout(
     val center: Float get() = (offset + end) / 2f
 }
 
-/** 换位判算的结果。[compensation] 是换位后要加回拖动偏移的像素数。 */
-internal data class DragDecision(val to: Int, val compensation: Float)
-
 /**
- * 算出被拖行现在该落到谁的位置。
+ * 被拖行现在压在第几行上，就落到第几行 —— 一次可以跨任意多格。
  *
- * ## 判据：只看紧邻的下一行 / 上一行，且比的是**中心线**
- *  - 为什么只看相邻行：一次只挪一格。跨过头了就停在原地，等下一次 onDrag 再推进 ——
- *    一次跳到第三格会让行在手指底下瞬移，反而更跟不住。
- *  - 为什么比中心线：若按"手指压在谁身上"判定，手指停在两行边界时，
- *    重排后它可能落到另一边，列表就会一格一格地抽搐。
- *  - 为什么必须是**紧邻**的：早期版本把"所有中心在拖动中心上方的行"都算成目标，
- *    结果原地不动（第 2 行中心 250）也会被判成"跨过了第 0 行"（中心 50）而乱换位。
+ * ## 判据：行的**区间**，不是行的中心
+ * 取"顶边 ≤ 被拖中心"的最后一行。行是连续排布的半开区间 `[offset, end)`，
+ * 所以这等价于"被拖中心落在谁的槽位里"。
  *
- * ## compensation 的符号：往下拖是**负数**
- * 换位后，被拖行的**基准位置** [RowLayout.offset] 会挪到新下标对应的位置。
- * 往下换时基准变大，而行必须留在手指底下不动，于是 `基准 + 偏移` 要保持不变 ——
- * 偏移只能**变小**。所以往下的补偿是被拖行高度的负值，往上是正值。
- * 符号写反的表征是：拖动时行会朝相反方向窜一大截，比不写补偿更糟。
+ * 不用"跨过行中心"作判据，是因为那要拖过半行才换位，
+ * 与"拖到哪一行就落到哪一行"的直觉差半格 —— 落点看起来总慢一拍。
  *
- * 返回 null 表示"还没跨过相邻行的中心"，此时不该换位。
+ * ## 为什么早期版本做不到任意跨度
+ * 中途改成了"只看紧邻的上下两行、一次推进一格"，那是为了绕开
+ * "原地不动也被判成跨过了上面某一行"的 bug。但代价是**拖不快**：
+ * 一次 `onDrag` 只推进一格，手指甩得快、事件来得稀，行就始终落在手指后面，
+ * 用户的感觉正是"只能一格一格地调，不能拖到我想去的地方"。
+ * 真正的问题不在"看几行"，而在判据本身会原地乱跳。
+ *
+ * 这个判据随手指**单调**变化，所以既不会原地乱跳，又天然支持任意跨度。
+ * 传空列表返回 -1（拖动开始时列表还没布局完）。
  */
-internal fun queueDragTarget(
-    rows: List<RowLayout>,
-    draggingIndex: Int,
-    draggedCenter: Float
-): DragDecision? {
-    val dragged = rows.firstOrNull { it.index == draggingIndex } ?: return null
-    val next = rows.firstOrNull { it.index == draggingIndex + 1 }
-    val prev = rows.firstOrNull { it.index == draggingIndex - 1 }
-
-    val target = when {
-        // 往下拖：中心越过下一行才换位
-        next != null && draggedCenter > next.center -> next
-        // 往上拖：中心越过上一行才换位
-        prev != null && draggedCenter < prev.center -> prev
-        else -> return null
-    }
-
-    val movedDown = target.index > draggingIndex
-    val compensation = if (movedDown) -dragged.size.toFloat() else dragged.size.toFloat()
-    return DragDecision(target.index, compensation)
+internal fun queueDragTarget(rows: List<RowLayout>, draggedCenter: Float): Int {
+    if (rows.isEmpty()) return -1
+    val sorted = rows.sortedBy { it.offset }
+    // 拖到列表最上方（比第一行顶边还高）时落第一行
+    return (sorted.lastOrNull { it.offset <= draggedCenter } ?: sorted.first()).index
 }

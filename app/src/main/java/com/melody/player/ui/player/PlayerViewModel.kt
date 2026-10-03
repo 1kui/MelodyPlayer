@@ -1930,21 +1930,16 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     }
 
     /**
-     * 把队列里的某一首挪到另一个位置（队列页的「上移 / 下移」和拖动排序共用）。
+     * 把队列里的某一首挪到另一个位置（队列页的「上移 / 下移」与拖动排序共用）。
      *
      * 下标能直接用，是因为队列就是控制器的时间线（见 [deriveQueue]）。
      * Media3 的 `moveMediaItem` 与 Kotlin 的 `removeAt` + `add(to, …)` 语义一致：
      * 都是先摘出来再插到 `to`。
-     */
-    fun moveInQueue(from: Int, to: Int) = moveInQueue(from, to, announce = true)
-
-    /**
-     * 拖动排序专用：[announce] 为 false 时不弹提示。
      *
-     * 一次拖动可能连换十几位，每换一位弹一条「已调整顺序」会把提示条刷成幻灯片，
-     * 真正需要确认的反而是最后那条。拖动本身就是实时可见的反馈，不需要中途解说。
+     * 拖动排序**只在松手时**调一次：拖动期间实时重排会让下标与列表布局错开一帧，
+     * 表现是行在两格之间来回横跳（详见 `QueueContent` 的注释）。
      */
-    fun moveInQueue(from: Int, to: Int, announce: Boolean) {
+    fun moveInQueue(from: Int, to: Int) {
         val queue = _state.value.queue
         if (from == to || from !in queue.indices || to !in queue.indices) return
         withController { c ->
@@ -1954,9 +1949,7 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             it.copy(queue = queue.toMutableList().apply { add(to, removeAt(from)) })
         }
         syncFromController()
-        if (announce) {
-            _messages.tryEmit("「${queue[from].title}」移到第 ${to + 1} 位")
-        }
+        _messages.tryEmit("「${queue[from].title}」移到第 ${to + 1} 位")
     }
 
     fun clearQueue() {
