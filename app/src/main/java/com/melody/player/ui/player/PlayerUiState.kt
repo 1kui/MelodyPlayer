@@ -19,6 +19,7 @@ import com.melody.player.core.online.ITunesApi
 import com.melody.player.core.online.ITunesHit
 import com.melody.player.core.online.LyricProvider
 import com.melody.player.core.online.OnlineSong
+import com.melody.player.core.online.RegionPing
 
 /**
  * 播放器界面状态。
@@ -174,6 +175,15 @@ data class PlayerUiState(
     val coverRegionCustom: Boolean = false,
     /** 用户选的搜索地区（[coverRegionCustom] 为真时生效）。 */
     val coverRegions: List<CoverRegion> = CoverRegion.DEFAULT,
+    /**
+     * 各地区最近一次测速的结果，key 是地区 code。
+     *
+     * 只存在内存里、不落盘：延迟是**当下的网络状况**，昨天测的 120ms 今天毫无意义，
+     * 存下来只会让用户对着一个过期数字做决定。
+     */
+    val coverRegionPings: Map<String, RegionPing> = emptyMap(),
+    /** 正在依次测速（不是"测完了"）。 */
+    val coverRegionPinging: Boolean = false,
 
     // ------------------------------------------------------ 专辑封面：用户自选
 

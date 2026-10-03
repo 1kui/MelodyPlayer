@@ -127,6 +127,15 @@ class AlbumArtRepository(context: Context) {
 
     fun stats(): Pair<Int, Long> = store.count() to store.totalBytes()
 
+    /**
+     * 测一个地区的连接延迟（毫秒）；连不上返回 null。
+     *
+     * 只是把 [ITunesClient.probe] 透出去。设置页要让用户看出"哪个区排在前面才搜得快"，
+     * 而"快"得实测 —— 凭地区名猜是猜不出来的（同一个地区在不同运营商下的差别
+     * 远大于地区之间的差别）。
+     */
+    suspend fun probeRegion(country: String): Long? = client.probe(country)
+
     // ------------------------------------------------------------------ 用户自选
 
     /**

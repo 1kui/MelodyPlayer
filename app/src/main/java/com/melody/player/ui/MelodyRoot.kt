@@ -394,6 +394,7 @@ fun MelodyRoot(
                             onCoverMinScoreChange = vm::setCoverMinScore,
                             onCoverRegionCustomChange = vm::setCoverRegionCustom,
                             onToggleCoverRegion = vm::toggleCoverRegion,
+                            onProbeCoverRegions = vm::probeCoverRegions,
                             onLibraryFolderOnlyChange = vm::setLibraryFolderOnly,
                             onPickLibraryFolder = { libraryFolderLauncher.launch(null) },
                             onClearLibraryFolder = vm::clearLibraryFolder,

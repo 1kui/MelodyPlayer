@@ -72,6 +72,41 @@ class ITunesClient(private val clock: () -> Long = System::currentTimeMillis) {
         return ITunesApi.parseSearch(body)
     }
 
+    /**
+     * 测一个地区的连接延迟（毫秒）；连不上返回 null。
+     *
+     * ## 为什么不走 [awaitTurn] 的 3 秒节流
+     * 那道闸门是给"批量取封面"守额度用的（20 次/分钟）。套在这里，8 个地区测一轮
+     * 要 24 秒 —— 用户点一下得等半分钟，这个功能就等于不存在。
+     * 代价是短时间内会连发几个请求，所以两头都收着：
+     *  - 调用方（ViewModel）在两次探测之间留一小段间隔；
+     *  - 这里仍然读 [blockedUntilMs]，正在冷却就**直接返回 null**，不再去撞那堵墙。
+     *
+     * 判"通"的标准是拿到 2xx，而不是"解析出内容"：目的是量这一路的往返时延，
+     * 不是验证搜索结果。所以关键词用一个必然有结果的词，只看响应码。
+     *
+     * 超时也比正常请求短（[PROBE_CONNECT_TIMEOUT_MS]）：测速最怕"卡住不动"，
+     * 一个不通的地区占着 12 秒会让整轮测速迟迟出不来结果。
+     */
+    suspend fun probe(country: String): Long? {
+        if (clock() < blockedUntilMs) return null
+        val started = clock()
+        val (body, code) = withContext(Dispatchers.IO) {
+            fetchText(
+                "$BASE${ITunesApi.SEARCH_PATH}?${ITunesApi.searchQuery(PROBE_KEYWORD, country, limit = 1)}",
+                connectTimeoutMs = PROBE_CONNECT_TIMEOUT_MS,
+                readTimeoutMs = PROBE_READ_TIMEOUT_MS
+            )
+        }
+        if (code == 403 || code == 429) {
+            // 被挡了：整体冷却（与正常请求共用同一个冷却位），并如实报"连不上"
+            blockedUntilMs = clock() + BLOCK_COOLDOWN_MS
+            return null
+        }
+        if (code !in 200..299 || body == null) return null
+        return clock() - started
+    }
+
     /** 取封面图片原始字节。失败返回 null（调用方据此保留原状，而不是清掉已有封面）。 */
     suspend fun download(url: String): ByteArray? = withContext(Dispatchers.IO) {
         runCatching {
@@ -120,11 +155,15 @@ class ITunesClient(private val clock: () -> Long = System::currentTimeMillis) {
         true
     }
 
-    private fun fetchText(url: String): Pair<String?, Int> = runCatching {
+    private fun fetchText(
+        url: String,
+        connectTimeoutMs: Int = CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = READ_TIMEOUT_MS
+    ): Pair<String?, Int> = runCatching {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", USER_AGENT)
             setRequestProperty("Accept", "application/json")
@@ -169,5 +208,12 @@ class ITunesClient(private val clock: () -> Long = System::currentTimeMillis) {
 
         /** 被挡之后的冷却时长。 */
         const val BLOCK_COOLDOWN_MS = 60_000L
+
+        /** 测速用的关键词：只要"这个请求能不能通"，用一个必然有结果的词。 */
+        const val PROBE_KEYWORD = "test"
+
+        /** 测速的超时。比正常请求短：卡住不动的地区要让它在几秒内失败，不能拖住整轮测速。 */
+        const val PROBE_CONNECT_TIMEOUT_MS = 4_000
+        const val PROBE_READ_TIMEOUT_MS = 5_000
     }
 }

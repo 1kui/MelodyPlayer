@@ -42,6 +42,7 @@ import com.melody.player.core.online.ITunesApi
 import com.melody.player.core.online.ITunesHit
 import com.melody.player.core.online.LyricProvider
 import com.melody.player.core.online.OnlineSong
+import com.melody.player.core.online.RegionPing
 import com.melody.player.core.online.TextMatch
 import com.melody.player.data.AlbumArt
 import com.melody.player.data.ArchivedLibrary
@@ -2078,6 +2079,59 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         )
     }
 
+    /** 测速协程。同时只允许一轮：连点"重新测速"不该让两轮交错着写同一份结果。 */
+    private var regionProbeJob: Job? = null
+
+    /**
+     * 依次测量每个地区的连接延迟。
+     *
+     * ## 为什么测的是**全部**地区，而不是用户勾选的那几个
+     * 这个功能的用途恰恰是"帮我决定勾哪几个"：只测已选中的，用户想知道
+     * "换成日本会不会更快"时就无从下手了。地区一共 8 个，一轮几个请求，
+     * 用户主动点、不是后台轮询，可以接受。
+     *
+     * ## 为什么是串行 + 间隔，而不是并发一把梭
+     * iTunes 这个接口是有限流的（见 [ITunesClient]）。8 个请求并发出去，
+     * 轻则全部变慢、重则直接触发 403 —— 那会得到"所有地区都无法连接"的假结论，
+     * 而这恰恰是用户最可能来点测速的场景（网不好）。
+     * 串行的代价只是几秒钟，换来的是每个数字都可信。
+     *
+     * 结果**边测边写**：8 个地区全测完再刷屏的话，最坏情况（有几个不通）要等三十秒
+     * 才看到第一行字，用户会以为点坏了。
+     */
+    fun probeCoverRegions() {
+        if (regionProbeJob?.isActive == true) return
+        regionProbeJob = viewModelScope.launch {
+            val targets = CoverRegion.entries.toList()
+            _state.update { it.copy(coverRegionPinging = true) }
+            var reachable = 0
+            for ((index, region) in targets.withIndex()) {
+                if (index > 0) delay(PROBE_GAP_MS)
+                // 逐条标"测速中"：用户能看到进度在哪一格，而不是八行一样的占位
+                _state.update {
+                    it.copy(coverRegionPings = it.coverRegionPings + (region.code to RegionPing.Testing))
+                }
+                val ms = covers.probeRegion(region.code)
+                if (ms != null) reachable++
+                _state.update {
+                    it.copy(
+                        coverRegionPings = it.coverRegionPings + (
+                            region.code to (ms?.let { value -> RegionPing.Ok(value) } ?: RegionPing.Unreachable)
+                            )
+                    )
+                }
+            }
+            _state.update { it.copy(coverRegionPinging = false) }
+            _messages.tryEmit(
+                if (reachable == 0) {
+                    "无法连接：${targets.size} 个地区都没测通，检查网络后再试"
+                } else {
+                    "测速完成：${reachable}/${targets.size} 个地区可达，数字越小越适合排在前面"
+                }
+            )
+        }
+    }
+
     /**
      * 勾选 / 取消一个搜索地区。
      *
@@ -2618,5 +2672,13 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
 
     private companion object {
         const val POSITION_POLL_MS = 250L
+
+        /**
+         * 两次地区测速之间留的间隔。
+         *
+         * 测速绕过了正常请求的 3 秒节流（否则一轮要 24 秒），这个间隔是它的替代品：
+         * 短到不拖慢整轮，又足以让接口不像是在被连续敲。
+         */
+        const val PROBE_GAP_MS = 250L
     }
 }

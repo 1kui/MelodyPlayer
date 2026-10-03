@@ -1,6 +1,42 @@
 package com.melody.player.core.online
 
 /**
+ * 一个地区的连接延迟探测结果。
+ *
+ * 做成密封类型而不是 `Int?`：三种"没有数字"的情形含义完全不同 —— 还没测过、
+ * 正在测、连不上。用一个 null 表示全部的话，界面只能统一画一条横线，
+ * 用户分不出"还没轮到"和"试过了，不通"。
+ */
+sealed interface RegionPing {
+
+    /** 正在测。这是"进行中"，不是结果。 */
+    data object Testing : RegionPing
+
+    /** 通了，一次搜索请求的往返耗时。 */
+    data class Ok(val ms: Long) : RegionPing
+
+    /** 连不上：超时 / DNS 失败 / 非 2xx / 正在被接口限流冷却。 */
+    data object Unreachable : RegionPing
+}
+
+/** 延迟的展示文案；`null` 表示这一项还没测过。 */
+fun latencyLabel(ping: RegionPing?): String = when (ping) {
+    null -> "未测速"
+    RegionPing.Testing -> "测速中…"
+    is RegionPing.Ok -> "${ping.ms} ms"
+    RegionPing.Unreachable -> "无法连接"
+}
+
+/**
+ * 把各地区拼成一行摘要，顺序**固定**为 [CoverRegion.entries]。
+ *
+ * 顺序不能跟着 Map 的遍历走：那会按"谁先测完"排，同一屏内容的排列每次都不一样，
+ * 读数的人得一行一行重新找。地区顺序是稳定的东西，展示顺序也该稳定。
+ */
+fun regionPingSummary(pings: Map<String, RegionPing>): String =
+    CoverRegion.entries.joinToString(" · ") { "${it.label} ${latencyLabel(pings[it.code])}" }
+
+/**
  * iTunes 搜索用的地区（接口的 `country` 参数）。
  *
  * 为什么需要它：同一个歌名在不同地区的曲库里是**不同的条目** —— 华语老歌在港台区

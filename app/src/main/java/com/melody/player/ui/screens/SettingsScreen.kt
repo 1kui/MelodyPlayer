@@ -41,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +70,7 @@ import com.melody.player.core.kwm.KwmFile
 import com.melody.player.core.kwm.KwmFiles
 import com.melody.player.core.online.CoverRegion
 import com.melody.player.core.online.ITunesApi
+import com.melody.player.core.online.regionPingSummary
 import com.melody.player.core.online.LyricProvider
 import com.melody.player.ui.AboutInfo
 import com.melody.player.ui.components.IconAction
@@ -213,6 +215,8 @@ fun SettingsContent(
     onCoverMinScoreChange: (Int) -> Unit,
     onCoverRegionCustomChange: (Boolean) -> Unit,
     onToggleCoverRegion: (CoverRegion) -> Unit,
+    /** 依次实测各地连接延迟（进这一栏会自动跑一次，也可以手动重测）。 */
+    onProbeCoverRegions: () -> Unit,
     onLibraryFolderOnlyChange: (Boolean) -> Unit,
     onPickLibraryFolder: () -> Unit,
     onClearLibraryFolder: () -> Unit,
@@ -1031,6 +1035,18 @@ fun SettingsContent(
                     )
                 }
                 if (state.coverRegionCustom) {
+                    // 进这一栏就自动测一轮延迟。用户打开开关的动机就是"想挑几个地区"，
+                    // 而挑的依据只有实测量出来的数字 —— 让他先点一下"测速"才知道有这回事，
+                    // 等于把这个判据藏起来了。测过就不再自动重测（结果还在这一屏上）。
+                    LaunchedEffect(state.coverRegionCustom, state.coverRegionPings.isEmpty()) {
+                        if (state.coverRegionCustom &&
+                            state.coverRegionPings.isEmpty() &&
+                            !state.coverRegionPinging
+                        ) {
+                            onProbeCoverRegions()
+                        }
+                    }
+
                     MultiChipFlow(
                         options = CoverRegion.entries.toList(),
                         selected = state.coverRegions.toSet(),
@@ -1040,6 +1056,34 @@ fun SettingsContent(
                     NoteText(
                         "最多同时选 ${CoverRegion.MAX_SELECTED} 个：每多一个地区就多一次接口调用，" +
                             "而 iTunes 这个接口有限流，选太多会让「补齐封面」慢得离谱。"
+                    )
+                    RowDivider()
+                    SettingRow(
+                        icon = MelodyIcons.Clock,
+                        title = "连接延迟",
+                        subtitle = if (state.coverRegionPinging) {
+                            "正在依次测量各地…（每测一个刷新一次）"
+                        } else {
+                            "实测一次搜索请求的往返耗时；「无法连接」表示这个地区现在取不到数据"
+                        },
+                        trailing = {
+                            TextButton(
+                                onClick = onProbeCoverRegions,
+                                enabled = !state.coverRegionPinging
+                            ) {
+                                Text(if (state.coverRegionPinging) "测速中…" else "重新测速")
+                            }
+                        }
+                    )
+                    Text(
+                        text = regionPingSummary(state.coverRegionPings),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = CardPad, vertical = 4.dp)
+                    )
+                    NoteText(
+                        "延迟只是「哪个区排在前面」的参考：它高不代表搜不到，只是每次搜索要多等一会儿。" +
+                            "先按延迟从低到高勾，再用实际搜索验一验。"
                     )
                 }
 
