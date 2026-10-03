@@ -3,7 +3,6 @@ package com.melody.player.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,9 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +35,20 @@ import com.melody.player.core.TimeFormat
 import com.melody.player.ui.icons.MelodyIcons
 
 /**
+ * 行菜单里"去掉这一行"的动作在不同页面里的两种含义。
+ *
+ * 文案、提示与警示色绑在一起：这三样只要有一处对不上，用户就会按着一个
+ * 说"只是移出队列"的按钮去删掉 App 里的文件副本。
+ */
+enum class RemoveStyle(val label: String, val hint: String, val danger: Boolean) {
+    /** 曲库：删的是 App 导入的副本，原文件不受影响，但副本确实没了 —— 标红。 */
+    LIBRARY("移出列表", "只删掉 App 导入的这份副本，设备里的原文件不动", danger = true),
+
+    /** 播放队列：只是不在这儿排队了，什么都没丢 —— 不标红。 */
+    QUEUE("移出队列", "只从播放队列里去掉，曲库和文件都不受影响", danger = false)
+}
+
+/**
  * 曲库列表的行。
  *
  * 正在播放的那一行：标题换成主色、右侧的时长换成跳动柱 —— 用户在长列表里
@@ -51,10 +61,24 @@ fun SongRow(
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
-    onPlayNext: () -> Unit,
+    /**
+     * 「下一首播放」。传 null 时菜单里不出现这一项 ——
+     * 在**播放队列**里它是句废话（那儿的顺序就是你拖出来的），
+     * 一个点了没有意义的菜单项比没有这个菜单项更糟。
+     */
+    onPlayNext: (() -> Unit)?,
     modifier: Modifier = Modifier,
     onHide: (() -> Unit)? = null,
+    /**
+     * 行菜单里那个"去掉这一行"的动作。
+     *
+     * 文案与警示色必须跟着**上下文**走：曲库里它是"删掉导入的副本"（会丢东西，标红），
+     * 到了播放队列里同一个位置的动作其实是"移出队列"（什么都没丢，不该标红）。
+     * 用同一句话描述两个不同的后果，是这类菜单最典型的一个坑 ——
+     * 三个字段绑成一个枚举，就不会出现"改了标题忘了改提示"这种半截状态。
+     */
     onRemove: (() -> Unit)? = null,
+    removeStyle: RemoveStyle = RemoveStyle.LIBRARY,
     onArchive: (() -> Unit)? = null,
     onUnarchive: (() -> Unit)? = null,
     /** 手动联网取这张专辑封面（本地标签里没有封面时用户会想试一下）。 */
@@ -72,7 +96,7 @@ fun SongRow(
     /** 已经有 App 库副本（本条就是副本，或它的原文件已归档）。 */
     archived: Boolean = false,
     /**
-     * 把这一首的歌词 / 封面写进音频文件。
+     * 把这一首的歌词 / 封面写进音频文件（会弹出勾选框确认）。
      *
      * 之前这个功能只挂在多选底部的「写进文件」里，要长按进多选才找得到 ——
      * 而多数用户想写的就是眼前这一首。放进单曲菜单是最短的路径。
@@ -212,153 +236,198 @@ fun SongRow(
                     iconSize = 20.dp,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("下一首播放") },
-                        leadingIcon = { Icon(MelodyIcons.SkipNext, null, Modifier.size(20.dp)) },
-                        onClick = {
-                            menuOpen = false
-                            onPlayNext()
-                        }
+                if (menuOpen) {
+                    MelodyActionSheet(
+                        title = song.title,
+                        subtitle = "${song.artistOrUnknown} · ${song.albumOrUnknown}",
+                        headerArt = { SongArtwork(song = song, size = 46.dp, corner = 12.dp) },
+                        actions = songRowActions(
+                            onPlayNow = onClick,
+                            onPlayNext = onPlayNext,
+                            onAddToPlaylist = onAddToPlaylist,
+                            onMoveUp = onMoveUp,
+                            onMoveDown = onMoveDown,
+                            onRemoveFromPlaylist = onRemoveFromPlaylist,
+                            onFetchCover = onFetchCover,
+                            onReparseEmbedded = onReparseEmbedded,
+                            onEmbedTags = onEmbedTags,
+                            onEditSong = onEditSong,
+                            onArchive = onArchive,
+                            onUnarchive = onUnarchive,
+                            onRemove = onRemove,
+                            removeStyle = removeStyle,
+                            onHide = onHide
+                        ),
+                        onDismiss = { menuOpen = false }
                     )
-                    DropdownMenuItem(
-                        text = { Text("立即播放") },
-                        leadingIcon = { Icon(MelodyIcons.Play, null, Modifier.size(20.dp)) },
-                        onClick = {
-                            menuOpen = false
-                            onClick()
-                        }
-                    )
-                    if (onFetchCover != null) {
-                        DropdownMenuItem(
-                            text = { Text("选择专辑封面") },
-                            leadingIcon = { Icon(MelodyIcons.AlbumArt, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onFetchCover()
-                            }
-                        )
-                    }
-                    // 写文件 / 重读内嵌封面紧跟在「选择专辑封面」后面：
-                    // 这三件事是一条线上的 —— 先挑图，再决定要不要写进文件，
-                    // 以及文件里那份是不是已经过期了。隔开了就要来回翻菜单。
-                    if (onEmbedTags != null) {
-                        DropdownMenuItem(
-                            text = { Text("写入文件标签…") },
-                            leadingIcon = { Icon(MelodyIcons.Save, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onEmbedTags()
-                            }
-                        )
-                    }
-                    if (onReparseEmbedded != null) {
-                        DropdownMenuItem(
-                            text = { Text("重新解析内嵌封面") },
-                            leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onReparseEmbedded()
-                            }
-                        )
-                    }
-                    if (onEditSong != null) {
-                        DropdownMenuItem(
-                            text = { Text("编辑歌曲信息") },
-                            leadingIcon = { Icon(MelodyIcons.Edit, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onEditSong()
-                            }
-                        )
-                    }
-                    // 歌单视图里的三个操作排在归档/隐藏之前：它们是"当前正在做的事"，
-                    // 埋在一堆通用操作里等于找不到
-                    if (onMoveUp != null) {
-                        DropdownMenuItem(
-                            text = { Text("上移一位") },
-                            leadingIcon = { Icon(MelodyIcons.ArrowUp, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onMoveUp()
-                            }
-                        )
-                    }
-                    if (onMoveDown != null) {
-                        DropdownMenuItem(
-                            text = { Text("下移一位") },
-                            leadingIcon = { Icon(MelodyIcons.ArrowDown, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onMoveDown()
-                            }
-                        )
-                    }
-                    if (onRemoveFromPlaylist != null) {
-                        DropdownMenuItem(
-                            text = { Text("从歌单移除") },
-                            leadingIcon = { Icon(MelodyIcons.Delete, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onRemoveFromPlaylist()
-                            }
-                        )
-                    }
-                    if (onAddToPlaylist != null) {
-                        DropdownMenuItem(
-                            text = { Text("加入歌单") },
-                            leadingIcon = { Icon(MelodyIcons.PlaylistAdd, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onAddToPlaylist()
-                            }
-                        )
-                    }
-                    if (onArchive != null) {
-                        DropdownMenuItem(
-                            text = { Text("归档到 App 库") },
-                            leadingIcon = { Icon(MelodyIcons.Archive, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onArchive()
-                            }
-                        )
-                    }
-                    if (onUnarchive != null) {
-                        DropdownMenuItem(
-                            text = { Text("取消归档") },
-                            leadingIcon = { Icon(MelodyIcons.ArchiveOff, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onUnarchive()
-                            }
-                        )
-                    }
-                    if (onHide != null) {
-                        DropdownMenuItem(
-                            text = { Text("隐藏这首") },
-                            leadingIcon = { Icon(MelodyIcons.EyeOff, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onHide()
-                            }
-                        )
-                    }
-                    if (onRemove != null) {
-                        DropdownMenuItem(
-                            text = { Text("移出列表") },
-                            leadingIcon = { Icon(MelodyIcons.Delete, null, Modifier.size(20.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onRemove()
-                            }
-                        )
-                    }
-                }   // DropdownMenu
+                }
             }
         }   // if (!selectionMode)
     }
 }
+
+/**
+ * 拼出这一行的动作清单。
+ *
+ * 抽成独立函数有两个原因：一是让 [SongRow] 的函数体只剩布局，
+ * 二是让"哪些操作在什么情况下出现"这件事集中在一处 —— 之前它散在十二个
+ * `if (xxx != null)` 里，加一个功能就得回头读一遍才能确定顺序。
+ *
+ * 顺序按用户自己的思路排，而不是按实现的历史：
+ *   播放 → 歌单 → 封面与标签 → 歌曲信息 → 曲库管理
+ * 越靠下越"重"（改文件、丢东西），红色只给真正丢东西的那几个。
+ */
+private fun songRowActions(
+    onPlayNow: () -> Unit,
+    onPlayNext: (() -> Unit)?,
+    onAddToPlaylist: (() -> Unit)?,
+    onMoveUp: (() -> Unit)?,
+    onMoveDown: (() -> Unit)?,
+    onRemoveFromPlaylist: (() -> Unit)?,
+    onFetchCover: (() -> Unit)?,
+    onReparseEmbedded: (() -> Unit)?,
+    onEmbedTags: (() -> Unit)?,
+    onEditSong: (() -> Unit)?,
+    onArchive: (() -> Unit)?,
+    onUnarchive: (() -> Unit)?,
+    onRemove: (() -> Unit)?,
+    removeStyle: RemoveStyle,
+    onHide: (() -> Unit)?
+): List<SheetAction> {
+    val play = buildList {
+        add(SheetAction(MelodyIcons.Play, "立即播放", onClick = onPlayNow))
+        onPlayNext?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.SkipNext,
+                    "下一首播放",
+                    subtitle = "插到当前这首歌后面",
+                    onClick = it
+                )
+            )
+        }
+    }.startSection("播放")
+
+    // 「加入歌单」与「排歌单顺序」互斥：已经在歌单里了，再问"要不要加"是句废话
+    val playlist = onAddToPlaylist?.let {
+        listOf(
+            SheetAction(MelodyIcons.PlaylistAdd, "加入歌单", onClick = it)
+        ).startSection("歌单")
+    } ?: emptyList()
+
+    val playlistOrder = buildList {
+        onMoveUp?.let { add(SheetAction(MelodyIcons.ArrowUp, "上移一位", onClick = it)) }
+        onMoveDown?.let { add(SheetAction(MelodyIcons.ArrowDown, "下移一位", onClick = it)) }
+        onRemoveFromPlaylist?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.Delete,
+                    "从歌单移除",
+                    subtitle = "只动歌单，曲库里那首还在",
+                    onClick = it
+                )
+            )
+        }
+    }.startSection("歌单顺序")
+
+    // 这三件事是一条线上的：先挑图，再决定要不要写进文件，
+    // 以及文件里那份是不是已经过期了。隔开了就要在两处之间来回找。
+    val coverAndTags = buildList {
+        onFetchCover?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.AlbumArt,
+                    "选择专辑封面",
+                    subtitle = "联网匹配一张，或从相册里挑",
+                    onClick = it
+                )
+            )
+        }
+        onReparseEmbedded?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.Refresh,
+                    "重新解析内嵌封面",
+                    subtitle = "重读文件里的封面（在别的播放器换过图时用）",
+                    onClick = it
+                )
+            )
+        }
+        onEmbedTags?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.Save,
+                    "写入文件标签…",
+                    subtitle = "把歌词和封面写进音频文件，写入后无法撤销",
+                    onClick = it
+                )
+            )
+        }
+    }.startSection("封面与标签")
+
+    val info = onEditSong?.let {
+        listOf(
+            SheetAction(
+                MelodyIcons.Edit,
+                "编辑歌曲信息",
+                subtitle = "只改 App 里的显示，不动文件",
+                onClick = it
+            )
+        ).startSection("歌曲信息")
+    } ?: emptyList()
+
+    // 越靠下越"重"：会改文件、会丢东西的都在这组，红色只给真正丢东西的那两个
+    val libraryOps = buildList {
+        onArchive?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.Archive,
+                    "归档到 App 库",
+                    subtitle = "复制一份到 App 专属目录，原文件删了也不会丢",
+                    onClick = it
+                )
+            )
+        }
+        onUnarchive?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.ArchiveOff,
+                    "取消归档",
+                    subtitle = "删掉 App 库里的副本并释放空间",
+                    danger = true,
+                    onClick = it
+                )
+            )
+        }
+        onHide?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.EyeOff,
+                    "隐藏这首",
+                    subtitle = "从列表里移开，设置页随时能恢复，文件不受影响",
+                    onClick = it
+                )
+            )
+        }
+        onRemove?.let {
+            add(
+                SheetAction(
+                    MelodyIcons.Delete,
+                    removeStyle.label,
+                    subtitle = removeStyle.hint,
+                    danger = removeStyle.danger,
+                    onClick = it
+                )
+            )
+        }
+    }.startSection("曲库管理")
+
+    return play + playlist + playlistOrder + coverAndTags + info + libraryOps
+}
+
+/** 把组标题打在**这一组的第一项**上；空组原样返回（不然会凭空多出一个组标题）。 */
+private fun List<SheetAction>.startSection(title: String): List<SheetAction> =
+    mapIndexed { i, action -> if (i == 0) action.copy(section = title) else action }
 
 /**
  * 「已归档」小标签。

@@ -71,22 +71,16 @@ data class PlayerUiState(
     val batchLabel: String = "",
 
     /**
-     * 批量「嵌入标签」正在为哪些歌选要写什么；非空时界面弹出选择框。
+     * 「把标签写进音频文件…」正在等哪几首的目标确认；null = 现在没有待确认的请求。
      *
-     * 分成"写歌词 / 写封面"两个勾选项而不是一个开关：多数用户只想固化其中一样，
-     * 一次全勾上会写出一堆自己并不想要的结果。
-     */
-    val batchEmbedTargetKeys: Set<String> = emptySet(),
-
-    /**
-     * 顶栏「把标签写进音频文件」被点了。
+     * 存**目标集合**而不是一个"要不要弹框"的布尔：四个入口（单曲行菜单、
+     * 多选批量条、顶栏、播放页）各自的作用对象不同，框必须照着被点的那一处来。
+     * 让框自己去读 `selection`，单曲入口就会写到别人身上。
      *
-     * 是个**脉冲**而不是持久状态：勾选框在 [com.melody.player.ui.screens.LibraryContent]
-     * 里（连同"写哪几首"的上下文），而按钮在顶栏，两者隔着一层。
-     * 用一次性信号把请求送过去，界面弹完框就把它清掉 ——
-     * 留成 true 的话，下次进曲库会莫名又弹一次框。
+     * 它住在状态里而不是某个页面的 local state，是因为触发它的按钮可能在任何页面
+     * （播放页是全屏浮层、顶栏在 Scaffold 上），本地状态跨不过去。
      */
-    val embedVisibleRequested: Boolean = false,
+    val embedRequestKeys: Set<String>? = null,
 
     /**
      * 批量「加入歌单」正在为哪些歌选目标；非空时界面弹出歌单选择列表。

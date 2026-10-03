@@ -52,6 +52,7 @@ import com.melody.player.core.SongQuery
 import com.melody.player.data.AudioLibrary
 import com.melody.player.ui.components.CoverCandidatesDialog
 import com.melody.player.ui.components.CoverSourceDialog
+import com.melody.player.ui.components.EmbedTagsDialog
 import com.melody.player.ui.components.LocalArtworkShape
 import com.melody.player.ui.components.MelodySnackbarHost
 import com.melody.player.ui.components.MiniPlayer
@@ -114,6 +115,9 @@ fun MelodyRoot(
     // 歌单的"新建 / 改名"共用一个命名对话框；删歌单要二次确认，所以单独一个待删对象
     var pendingPlaylistName by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingPlaylistDelete by remember { mutableStateOf<Playlist?>(null) }
+    // 清空队列会**立刻停止播放**，而它是顶栏上一颗不带文字的图标按钮 ——
+    // 点错的代价是正在听的歌没了、队列也没了。加一道确认。
+    var pendingQueueClear by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -240,7 +244,7 @@ fun MelodyRoot(
 
                         MelodyTab.QUEUE -> QueueTopBar(
                             queueSize = state.queue.size,
-                            onClear = vm::clearQueue
+                            onClear = { pendingQueueClear = true }
                         )
 
                         MelodyTab.SETTINGS -> SettingsTopBar()
@@ -333,13 +337,10 @@ fun MelodyRoot(
                             onBatchRemoveFromPlaylist = vm::batchRemoveFromPlaylist,
                             onBatchRemoveCovers = vm::batchRemoveCovers,
                             onBatchHideSongs = vm::batchHideSongs,
-                            // 曲库页的写入/重读都把作用对象显式传下去：
-                            // 单曲入口、批量入口、整库入口共用同一条通道
-                            onEmbedTags = { keys, lyrics, artwork ->
-                                vm.embedTagsInto(keys, lyrics, artwork)
-                            },
-                            onReparseEmbedded = vm::reparseEmbeddedArtwork,
-                            onEmbedVisibleRequestConsumed = vm::consumeEmbedVisibleRequest
+                            // 曲库页只报"要处理哪几首"，勾选框由根界面统一弹（见下面的
+                            // EmbedTagsDialog）—— 播放页也要用同一个框，而它跨不过页面
+                            onRequestEmbed = vm::requestEmbed,
+                            onReparseEmbedded = vm::reparseEmbeddedArtwork
                         )
 
                         MelodyTab.QUEUE -> QueueContent(
@@ -430,7 +431,14 @@ fun MelodyRoot(
                     onReloadLyrics = vm::reloadLyrics,
                     onClearImportedLyrics = vm::clearImportedLyrics,
                     onFetchCover = vm::beginCoverPickForCurrent,
-                    onEditSongInfo = vm::beginEditSongForCurrent
+                    onEditSongInfo = vm::beginEditSongForCurrent,
+                    // 播放页也要能重读封面、写标签、加歌单：用户在这儿正对着封面和歌词，
+                    // 这些操作"就在手边"，不该逼他收起播放器再去找那一行
+                    onReparseCover = { state.currentSong?.let(vm::reparseEmbeddedForSong) },
+                    onEmbedTags = vm::requestEmbedForCurrent,
+                    onAddToPlaylist = {
+                        state.currentSong?.let(vm::beginAddToPlaylist)
+                    }
                 )
             }
 
@@ -546,6 +554,58 @@ fun MelodyRoot(
                     dismissButton = {
                         TextButton(onClick = { pendingPlaylistDelete = null }) { Text("保留") }
                     }
+                )
+            }
+
+            if (pendingQueueClear) {
+                val count = state.queue.size
+                AlertDialog(
+                    onDismissRequest = { pendingQueueClear = false },
+                    title = { Text("清空播放队列？") },
+                    text = {
+                        Text(
+                            "队列里的 $count 首会全部移出，正在播放的这首会停下来。\n" +
+                                "曲库里的歌、歌单、隐藏与归档状态都不受影响 —— " +
+                                "想接着听，回音乐库点一首就行。"
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                pendingQueueClear = false
+                                vm.clearQueue()
+                            }
+                        ) { Text("清空", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingQueueClear = false }) { Text("取消") }
+                    }
+                )
+            }
+
+            // 「把标签写进音频文件」的勾选框。
+            //
+            // 它挂在根界面上，而不是曲库页里：触发它的按钮有四个（曲库行菜单、
+            // 多选批量条、曲库顶栏、播放页），而播放页是一层全屏浮层 ——
+            // 长在曲库页里的对话框会被它整个盖住，用户在播放页点"写进文件"，
+            // 会看到什么都没发生。
+            //
+            // 作用对象就是上面那个 key 集合原样传回来，不在这里重新解析：
+            // 用户确认的是"我看见的那几首"。
+            state.embedRequestKeys?.let { keys ->
+                val single = if (keys.size == 1) {
+                    state.songs.firstOrNull { it.key in keys }?.title
+                        ?: state.queue.firstOrNull { it.key in keys }?.title
+                } else {
+                    null
+                }
+                EmbedTagsDialog(
+                    count = keys.size,
+                    countLabel = if (single != null) "将修改「$single」的标签。" else null,
+                    onConfirm = { writeLyrics, writeArtwork ->
+                        vm.embedTagsInto(keys, writeLyrics, writeArtwork)
+                    },
+                    onDismiss = vm::dismissEmbedRequest
                 )
             }
 

@@ -48,6 +48,7 @@ import com.melody.player.core.TimeFormat
 import com.melody.player.ui.components.EmptyState
 import com.melody.player.ui.components.IconAction
 import com.melody.player.ui.components.PlayingBars
+import com.melody.player.ui.components.RemoveStyle
 import com.melody.player.ui.components.SongArtwork
 import com.melody.player.ui.components.SongRow
 import com.melody.player.ui.icons.MelodyIcons
@@ -436,8 +437,11 @@ fun QueueContent(
                     isCurrent = state.currentIndex == index,
                     isPlaying = state.isPlaying,
                     onClick = { if (!suppressPlay) onPlayIndex(index) },
-                    onPlayNext = { onPlayIndex(index) },
+                    // 队列里没有「下一首播放」这回事：这儿的顺序就是用户自己拖出来的，
+                    // 想让它下一个播，把它拖到当前这首后面就行
+                    onPlayNext = null,
                     onRemove = { onRemoveIndex(index) },
+                    removeStyle = RemoveStyle.QUEUE,
                     // 长按让给外层的拖动排序：这两个手势不能同时挂在一行上
                     longPressEnabled = false,
                     // 拖动已经能改顺序了，菜单里的「上移/下移」在拖动可用时是冗余的

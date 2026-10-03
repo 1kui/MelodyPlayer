@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -37,7 +36,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +54,8 @@ import com.melody.player.core.SongQuery
 import com.melody.player.core.SortMode
 import com.melody.player.ui.components.EmptyState
 import com.melody.player.ui.components.IconAction
+import com.melody.player.ui.components.MelodyActionSheet
+import com.melody.player.ui.components.SheetAction
 import com.melody.player.ui.components.SongRow
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
@@ -96,7 +96,8 @@ fun LibraryTopBar(
     onReparseAllEmbedded: () -> Unit = {}
 ) {
     var sortMenuOpen by remember { mutableStateOf(false) }
-    var importMenuOpen by remember { mutableStateOf(false) }
+    var playlistMenuOpen by remember { mutableStateOf(false) }
+    var moreMenuOpen by remember { mutableStateOf(false) }
 
     TopAppBar(
         modifier = modifier,
@@ -137,42 +138,40 @@ fun LibraryTopBar(
                     IconAction(
                         imageVector = MelodyIcons.Playlist,
                         contentDescription = "歌单操作",
-                        onClick = { sortMenuOpen = true },
+                        onClick = { playlistMenuOpen = true },
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("播放这个歌单") },
-                            leadingIcon = { Icon(MelodyIcons.Play, null, Modifier.size(18.dp)) },
-                            enabled = playlist.songKeys.isNotEmpty(),
-                            onClick = {
-                                sortMenuOpen = false
-                                onPlayWholePlaylist()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("重命名歌单") },
-                            leadingIcon = { Icon(MelodyIcons.Edit, null, Modifier.size(18.dp)) },
-                            onClick = {
-                                sortMenuOpen = false
-                                onRenamePlaylist(playlist)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("新建歌单") },
-                            leadingIcon = { Icon(MelodyIcons.PlaylistAdd, null, Modifier.size(18.dp)) },
-                            onClick = {
-                                sortMenuOpen = false
-                                onCreatePlaylist()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除歌单") },
-                            leadingIcon = { Icon(MelodyIcons.Delete, null, Modifier.size(18.dp)) },
-                            onClick = {
-                                sortMenuOpen = false
-                                onDeletePlaylist(playlist)
-                            }
+                    if (playlistMenuOpen) {
+                        MelodyActionSheet(
+                            title = playlist.name,
+                            subtitle = if (playlist.songKeys.isEmpty()) {
+                                "空歌单"
+                            } else {
+                                "${playlist.songKeys.size} 首 · 按歌单顺序播放"
+                            },
+                            actions = listOf(
+                                SheetAction(
+                                    icon = MelodyIcons.Play,
+                                    title = "播放这个歌单",
+                                    subtitle = "从第一首开始，按你排的顺序",
+                                    enabled = playlist.songKeys.isNotEmpty(),
+                                    section = "歌单操作",
+                                    onClick = onPlayWholePlaylist
+                                ),
+                                SheetAction(
+                                    icon = MelodyIcons.Edit,
+                                    title = "重命名歌单",
+                                    onClick = { onRenamePlaylist(playlist) }
+                                ),
+                                SheetAction(
+                                    icon = MelodyIcons.Delete,
+                                    title = "删除歌单",
+                                    subtitle = "只删歌单本身，里面的曲目不会被删除",
+                                    danger = true,
+                                    onClick = { onDeletePlaylist(playlist) }
+                                )
+                            ),
+                            onDismiss = { playlistMenuOpen = false }
                         )
                     }
                 }
@@ -204,56 +203,72 @@ fun LibraryTopBar(
                     }
                 }
             }
+            // 这个按钮以前画的是"导入"图标、菜单里却塞着写标签和重读封面 ——
+            // 想找"重扫一遍"的人不会去点一个只说自己管导入的按钮。
+            // 改成「更多」+ ⋮，并按对象分两组，找东西不用逐个读过去。
             Box {
                 IconAction(
-                    imageVector = MelodyIcons.ImportMusic,
-                    contentDescription = "导入音乐",
-                    onClick = { importMenuOpen = true },
+                    imageVector = MelodyIcons.MoreVertical,
+                    contentDescription = "更多操作",
+                    onClick = { moreMenuOpen = true },
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                DropdownMenu(expanded = importMenuOpen, onDismissRequest = { importMenuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("重新扫描媒体库") },
-                        leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(18.dp)) },
-                        onClick = {
-                            importMenuOpen = false
-                            onRefresh()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("从文件选择…") },
-                        leadingIcon = { Icon(MelodyIcons.Folder, null, Modifier.size(18.dp)) },
-                        onClick = {
-                            importMenuOpen = false
-                            onImportAudio()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("新建歌单") },
-                        leadingIcon = { Icon(MelodyIcons.PlaylistAdd, null, Modifier.size(18.dp)) },
-                        onClick = {
-                            importMenuOpen = false
-                            onCreatePlaylist()
-                        }
-                    )
-                    // 这两项以前只能从多选底部的操作条进去（要先长按 → 多选 → 滑到底），
-                    // 属于"存在但找不到"。挂到常驻的导入菜单里，等于给它们一个
-                    // 不用改变任何选择状态就能到的入口
-                    DropdownMenuItem(
-                        text = { Text("把标签写进音频文件…") },
-                        leadingIcon = { Icon(MelodyIcons.Save, null, Modifier.size(18.dp)) },
-                        onClick = {
-                            importMenuOpen = false
-                            onEmbedAll()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重新解析内嵌封面") },
-                        leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(18.dp)) },
-                        onClick = {
-                            importMenuOpen = false
-                            onReparseAllEmbedded()
-                        }
+                if (moreMenuOpen) {
+                    MelodyActionSheet(
+                        title = playlist?.name ?: "音乐库",
+                        subtitle = playlist?.let { "对这个歌单" }
+                            ?: "$totalCount 首 · 对当前列表",
+                        actions = buildList {
+                            add(
+                                SheetAction(
+                                    icon = MelodyIcons.Refresh,
+                                    title = "重新扫描媒体库",
+                                    subtitle = "设备里新增的歌曲会出现在列表里",
+                                    section = "曲库",
+                                    onClick = onRefresh
+                                )
+                            )
+                            add(
+                                SheetAction(
+                                    icon = MelodyIcons.Folder,
+                                    title = "从文件选择…",
+                                    subtitle = "用文件选择器导入单个或几个文件",
+                                    onClick = onImportAudio
+                                )
+                            )
+                            if (playlist == null) {
+                                add(
+                                    SheetAction(
+                                        icon = MelodyIcons.PlaylistAdd,
+                                        title = "新建歌单",
+                                        onClick = onCreatePlaylist
+                                    )
+                                )
+                            }
+                            // 这两项以前只能从多选底部的操作条进去（要先长按 → 多选 → 滑到底），
+                            // 属于"存在但找不到"。放在这里等于给它们一个
+                            // 不用改变任何选择状态就能到的入口
+                            add(
+                                SheetAction(
+                                    icon = MelodyIcons.Save,
+                                    title = "把标签写进音频文件…",
+                                    subtitle = "对当前列表里的每一首，写入后无法撤销",
+                                    section = "标签与封面",
+                                    enabled = totalCount > 0,
+                                    onClick = onEmbedAll
+                                )
+                            )
+                            add(
+                                SheetAction(
+                                    icon = MelodyIcons.Refresh,
+                                    title = "重新解析内嵌封面",
+                                    subtitle = "重读文件里的封面（在别的播放器换过图时用）",
+                                    enabled = totalCount > 0,
+                                    onClick = onReparseAllEmbedded
+                                )
+                            )
+                        },
+                        onDismiss = { moreMenuOpen = false }
                     )
                 }
             }
@@ -364,17 +379,17 @@ fun LibraryContent(
     onBatchRemoveCovers: () -> Unit = {},
     onBatchHideSongs: () -> Unit = {},
     /**
-     * 对**任意一组**曲目写标签（单曲 / 多选 / 整个可见列表都走这里）。
+     * 请求对**任意一组**曲目写标签（单曲 / 多选 / 整个可见列表都走这里）。
      *
-     * 传 key 集合而不是"用当前选中项"：多选只是三个入口之一，
-     * 让界面替调用方猜作用对象，单曲入口就会写到别人身上。
+     * 只把"要处理哪几首"报上去，勾选框与二次确认由根界面统一弹 ——
+     * 那个框以前长在这个页面里，可播放页和顶栏也要用它，
+     * 于是顶栏只能靠一个"脉冲信号"隔着一层喊它开框，而播放页那层压根够不着。
+     * 传 key 集合而不是"用当前选中项"：多选只是入口之一，
+     * 让框自己猜作用对象，单曲入口就会写到别人身上。
      */
-    onEmbedTags: (keys: Set<String>, writeLyrics: Boolean, writeArtwork: Boolean) -> Unit =
-        { _, _, _ -> },
+    onRequestEmbed: (keys: Set<String>) -> Unit = {},
     /** 重新读一遍这些曲目的内嵌封面；传空集合表示整个曲库。 */
-    onReparseEmbedded: (keys: Set<String>) -> Unit = {},
-    /** 顶栏那个「写进文件」被点了：这个勾选框由外部信号唤起，开完要收掉信号。 */
-    onEmbedVisibleRequestConsumed: () -> Unit = {}
+    onReparseEmbedded: (keys: Set<String>) -> Unit = {}
 ) {
     // 取消归档会删掉 App 库里那份副本（原文件已不在时它就是仅存的一份），
     // 所以从行菜单进来也必须先确认一次，不能点一下就没
@@ -462,125 +477,6 @@ fun LibraryContent(
             },
             dismissButton = {
                 TextButton(onClick = { pendingBatchCoverRemoval = false }) { Text("取消") }
-            }
-        )
-    }
-
-    /**
-     * 「写进文件」的选择框。
-     *
-     * 刻意做成**先选内容、再二次确认**两步：这个操作会改用户的音频文件，
-     * 不可撤销（App 没有原文件备份）。一步到位的按钮最容易让人误点，
-     * 而歌词与封面分开勾是因为多数用户只想要其中一样。
-     *
-     * 目标集合是**显式传进来的 key**，不是现读 `state.selection`：
-     * 这个框有三个入口（多选批量条、单曲 ⋮ 菜单、整库），各自的作用对象不同，
-     * 让框自己去猜"用户现在选了什么"必然在单曲入口上出错。
-     */
-    var pendingEmbed by remember { mutableStateOf<Set<String>?>(null) }
-    var embedWriteLyrics by remember { mutableStateOf(true) }
-    var embedWriteArtwork by remember { mutableStateOf(true) }
-    var embedConfirmed by remember { mutableStateOf(false) }
-
-    /**
-     * 顶栏那个「把标签写进音频文件…」的落点。
-     *
-     * 按钮在顶栏、这个勾选框在曲库页，跨着一层，所以由外部发信号、这里开框。
-     * 目标取 `shown`（当前视图真正看得见的那些）而不是整个曲库：
-     * 搜索着点这个按钮的人，预期是处理眼前这几十首。
-     */
-    LaunchedEffect(state.embedVisibleRequested) {
-        if (state.embedVisibleRequested && shown.isNotEmpty()) {
-            pendingEmbed = shown.mapTo(LinkedHashSet()) { it.key }
-        }
-        onEmbedVisibleRequestConsumed()
-    }
-
-    pendingEmbed?.let { embedTargets ->
-        AlertDialog(
-            onDismissRequest = { pendingEmbed = null },
-            title = { Text("把内容写进音频文件？") },
-            text = {
-                Column {
-                    Text(
-                        "将修改 ${embedTargets.size} 个音频文件的标签。",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { embedWriteLyrics = !embedWriteLyrics }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = embedWriteLyrics,
-                            onCheckedChange = { embedWriteLyrics = it }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text("写入歌词", style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                "把当前这一份歌词写进内嵌标签",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { embedWriteArtwork = !embedWriteArtwork }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = embedWriteArtwork,
-                            onCheckedChange = { embedWriteArtwork = it }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text("写入封面", style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                "把 App 里存的封面写进文件，别的播放器也能看到",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "只支持 MP3 与 FLAC；文件本身不会被转码，音频数据原样保留。\n\n" +
-                            "这一步会改动原文件，且没有备份、无法撤销。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = embedWriteLyrics || embedWriteArtwork,
-                    onClick = {
-                        if (!embedConfirmed) {
-                            // 第一次点只把按钮变成"确实要改文件"，第二次才真的动手：
-                            // 不可撤销的操作值得多一次确认
-                            embedConfirmed = true
-                        } else {
-                            pendingEmbed = null
-                            embedConfirmed = false
-                            onEmbedTags(embedTargets, embedWriteLyrics, embedWriteArtwork)
-                        }
-                    }
-                ) { Text(if (embedConfirmed) "确认修改文件" else "下一步") }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        pendingEmbed = null
-                        embedConfirmed = false
-                    }
-                ) { Text("取消") }
             }
         )
     }
@@ -707,7 +603,7 @@ fun LibraryContent(
                             },
                             onHide = { onHideSong(song) },
                             onFetchCover = { onFetchCover(song) },
-                            onEmbedTags = { pendingEmbed = setOf(song.key) },
+                            onEmbedTags = { onRequestEmbed(setOf(song.key)) },
                             onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
                             onEditSong = { onEditSong(song) },
                             onArchive = if (song.archived) null else {
@@ -774,11 +670,9 @@ fun LibraryContent(
                                             }
                                         )
                                         append("；长按任意一行可进入多选，批量加入歌单/去封面/隐藏")
-                                        append("；不想听的点该行右侧 ⋮ →「隐藏这首」")
-                                        append("；想把歌词或封面写进音频文件，点该行 ⋮ →「写入文件标签…」")
-                                        append("，或用右上角菜单里的「把标签写进音频文件…」一次处理整个列表")
-                                        append("；在别的播放器里换过封面的话，点 ⋮ →「重新解析内嵌封面」重读一遍")
-                                        append("；怕误删的点 ⋮ →「归档到 App 库」")
+                                        append("；点该行右侧 ⋮ 会从底部展开这一首的全部操作")
+                                        append("（封面、写入文件标签、编辑信息、归档、隐藏），每一项都带一句说明")
+                                        append("；对整份列表写标签或重读内嵌封面，在右上角 ⋮ 里")
                                         if (state.archivedCount > 0) {
                                             append("，已归档的那几行可以在 ⋮ 里「取消归档」")
                                         }
@@ -818,11 +712,10 @@ fun LibraryContent(
                 onRemoveFromPlaylist = onBatchRemoveFromPlaylist,
                 onRemoveCovers = { pendingBatchCoverRemoval = true },
                 onHide = onBatchHideSongs,
-                onEmbed = { pendingEmbed = state.selection },
-                onReparse = {
-                    onReparseEmbedded(state.selection)
-                    onClearSelection()
-                },
+                onEmbed = { onRequestEmbed(state.selection) },
+                // 和「写进文件」一样**不动选择**：这两个都是"对选中的这几首做一件事"，
+                // 做完一件就自动退出多选，会让想接着做第二件的用户重新选一遍
+                onReparse = { onReparseEmbedded(state.selection) },
                 modifier = Modifier.padding(bottom = contentPadding.calculateBottomPadding())
             )
         }

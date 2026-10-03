@@ -36,8 +36,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -68,7 +66,9 @@ import com.melody.player.core.Song
 import com.melody.player.core.TimeFormat
 import com.melody.player.core.online.OnlineSong
 import com.melody.player.ui.components.IconAction
+import com.melody.player.ui.components.MelodyActionSheet
 import com.melody.player.ui.components.MelodySeekBar
+import com.melody.player.ui.components.SheetAction
 import com.melody.player.ui.components.PillSwitcher
 import com.melody.player.ui.components.SongArtwork
 import com.melody.player.ui.icons.MelodyIcons
@@ -100,6 +100,18 @@ fun PlayerScreen(
     onFetchCover: () -> Unit,
     /** 改当前这首歌的歌名/歌手/专辑。 */
     onEditSongInfo: () -> Unit,
+    /**
+     * 重新读一遍这个文件里内嵌的封面。
+     *
+     * 放在播放页是有道理的：用户在这儿正对着封面看，也刚在别的播放器里换过图，
+     * 心里想的就是"把这张图重新读一遍"。以前它只藏在曲库行的 ⋮ 里，
+     * 从播放页出发得先收起播放器、再找到那一行。
+     */
+    onReparseCover: () -> Unit,
+    /** 把当前这首的歌词 / 封面写进音频文件（弹勾选框确认）。 */
+    onEmbedTags: () -> Unit,
+    /** 把当前这首加进自建歌单。 */
+    onAddToPlaylist: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val song = state.currentSong
@@ -153,64 +165,31 @@ fun PlayerScreen(
                 Box {
                     IconAction(
                         imageVector = MelodyIcons.MoreVertical,
-                        contentDescription = "更多歌词操作",
+                        contentDescription = "更多操作",
+                        enabled = song != null,
                         onClick = { menuOpen = true },
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("选择专辑封面") },
-                            leadingIcon = { Icon(MelodyIcons.AlbumArt, null, Modifier.size(18.dp)) },
-                            enabled = song != null,
-                            onClick = {
-                                menuOpen = false
-                                onFetchCover()
-                            }
+                    if (menuOpen && song != null) {
+                        MelodyActionSheet(
+                            title = song.title,
+                            subtitle = "${song.artistOrUnknown} · ${song.albumOrUnknown}",
+                            headerArt = { SongArtwork(song = song, size = 46.dp, corner = 12.dp) },
+                            actions = playerActions(
+                                lyricsImported = state.lyricsImported,
+                                onlineSearching = state.onlineSearching,
+                                onFetchCover = onFetchCover,
+                                onReparseCover = onReparseCover,
+                                onEmbedTags = onEmbedTags,
+                                onEditSongInfo = onEditSongInfo,
+                                onAddToPlaylist = onAddToPlaylist,
+                                onFetchOnlineLyrics = onFetchOnlineLyrics,
+                                onImportLyrics = onImportLyrics,
+                                onReloadLyrics = onReloadLyrics,
+                                onClearImportedLyrics = onClearImportedLyrics
+                            ),
+                            onDismiss = { menuOpen = false }
                         )
-                        DropdownMenuItem(
-                            text = { Text("编辑歌曲信息") },
-                            leadingIcon = { Icon(MelodyIcons.Edit, null, Modifier.size(18.dp)) },
-                            enabled = song != null,
-                            onClick = {
-                                menuOpen = false
-                                onEditSongInfo()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("联网获取歌词") },
-                            leadingIcon = { Icon(MelodyIcons.CloudDownload, null, Modifier.size(18.dp)) },
-                            enabled = song != null && !state.onlineSearching,
-                            onClick = {
-                                menuOpen = false
-                                onFetchOnlineLyrics()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("导入 .lrc 歌词文件") },
-                            leadingIcon = { Icon(MelodyIcons.Folder, null, Modifier.size(18.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onImportLyrics()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("重新解析内嵌歌词") },
-                            leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(18.dp)) },
-                            onClick = {
-                                menuOpen = false
-                                onReloadLyrics()
-                            }
-                        )
-                        if (state.lyricsImported) {
-                            DropdownMenuItem(
-                                text = { Text("清除选定的歌词") },
-                                leadingIcon = { Icon(MelodyIcons.Delete, null, Modifier.size(18.dp)) },
-                                onClick = {
-                                    menuOpen = false
-                                    onClearImportedLyrics()
-                                }
-                            )
-                        }
                     }
                 }
             }
@@ -351,6 +330,108 @@ fun PlayerScreen(
         }
     }
 }
+
+/**
+ * 播放页的动作清单。
+ *
+ * 分成「封面 / 歌曲 / 歌词」三组 —— 播放页顶栏那个 ⋮ 以前的内容描述写的是
+ * "更多歌词操作"，可里面却混着换封面、改歌曲信息：找封面的人不会去点一个
+ * 说自己只管歌词的按钮。现在按对象分组，名字也改成「更多操作」。
+ *
+ * 「重新解析内嵌封面」以前只在曲库行里；用户在这一页正对着封面看，
+ * 想重读的就是它，所以这儿必须有。
+ */
+private fun playerActions(
+    lyricsImported: Boolean,
+    onlineSearching: Boolean,
+    onFetchCover: () -> Unit,
+    onReparseCover: () -> Unit,
+    onEmbedTags: () -> Unit,
+    onEditSongInfo: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onFetchOnlineLyrics: () -> Unit,
+    onImportLyrics: () -> Unit,
+    onReloadLyrics: () -> Unit,
+    onClearImportedLyrics: () -> Unit
+): List<SheetAction> {
+    val cover = listOf(
+        SheetAction(
+            MelodyIcons.AlbumArt,
+            "选择专辑封面",
+            subtitle = "联网匹配一张，或从相册里挑",
+            onClick = onFetchCover
+        ),
+        SheetAction(
+            MelodyIcons.Refresh,
+            "重新解析内嵌封面",
+            subtitle = "重读文件里的封面（在别的播放器换过图时用）",
+            onClick = onReparseCover
+        ),
+        SheetAction(
+            MelodyIcons.Save,
+            "写入文件标签…",
+            subtitle = "把这份歌词与封面写进音频文件，写入后无法撤销",
+            onClick = onEmbedTags
+        )
+    ).startSection("封面")
+
+    val songInfo = listOf(
+        SheetAction(
+            MelodyIcons.Edit,
+            "编辑歌曲信息",
+            subtitle = "只改 App 里的显示，不动文件",
+            onClick = onEditSongInfo
+        ),
+        SheetAction(MelodyIcons.PlaylistAdd, "加入歌单", onClick = onAddToPlaylist)
+    ).startSection("歌曲")
+
+    val lyrics = buildList {
+        add(
+            SheetAction(
+                MelodyIcons.CloudDownload,
+                "联网获取歌词",
+                subtitle = if (onlineSearching) "正在搜索…" else "从网易云 / LRCLIB 里找一份",
+                enabled = !onlineSearching,
+                onClick = onFetchOnlineLyrics
+            )
+        )
+        add(
+            SheetAction(
+                MelodyIcons.Folder,
+                "导入 .lrc 歌词文件",
+                subtitle = "用手边已有的歌词文件覆盖",
+                onClick = onImportLyrics
+            )
+        )
+        add(
+            SheetAction(
+                MelodyIcons.Refresh,
+                "重新解析内嵌歌词",
+                subtitle = "重读文件里内嵌的那份歌词",
+                onClick = onReloadLyrics
+            )
+        )
+        if (lyricsImported) {
+            // 标红而不是放在最后：清掉之后就退回内嵌歌词或同名 .lrc，
+            // 是"做了才知道原来那份多难找"的操作，值得一句边界说明和一个警示色
+            add(
+                SheetAction(
+                    MelodyIcons.Delete,
+                    "清除选定的歌词",
+                    subtitle = "退回使用文件内嵌歌词或同名 .lrc 文件",
+                    danger = true,
+                    onClick = onClearImportedLyrics
+                )
+            )
+        }
+    }.startSection("歌词")
+
+    return cover + songInfo + lyrics
+}
+
+/** 把组标题打在这一组的第一项上。 */
+private fun List<SheetAction>.startSection(title: String): List<SheetAction> =
+    mapIndexed { i, action -> if (i == 0) action.copy(section = title) else action }
 
 /**
  * 封面页。上下滑动切歌（可在设置里关），带完整的滑动动画：

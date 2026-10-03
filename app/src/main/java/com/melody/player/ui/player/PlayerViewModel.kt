@@ -1007,56 +1007,58 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         }
     }
 
-    // ------------------------------------------------------ 批量：嵌入标签
+    // ------------------------------------------------------ 嵌入标签
 
-    /** 批量「嵌入标签」：先让用户选要写什么，再动手。 */
-    fun beginBatchEmbed() {
-        val keys = _state.value.selection
-        if (keys.isEmpty()) return
-        _state.update { it.copy(batchEmbedTargetKeys = keys) }
+    /**
+     * 请求对这几首写标签：把"要处理哪几首"记下来，由根界面弹勾选框。
+     *
+     * 触发它的有四处（曲库行菜单 / 多选批量条 / 曲库顶栏 / 播放页），
+     * 作用对象各不相同，所以**必须**由调用方显式给出 key 集合。
+     */
+    fun requestEmbed(keys: Collection<String>) {
+        val targets = keys.toCollection(LinkedHashSet())
+        if (targets.isEmpty()) {
+            _messages.tryEmit("没有可写入的曲目")
+            return
+        }
+        _state.update { it.copy(embedRequestKeys = targets) }
     }
 
-    fun dismissBatchEmbed() {
-        _state.update { it.copy(batchEmbedTargetKeys = emptySet()) }
+    /** 播放页那个入口：对当前正在播放的这一首写标签。 */
+    fun requestEmbedForCurrent() {
+        val song = _state.value.currentSong ?: return
+        requestEmbed(listOf(song.key))
+    }
+
+    /** 勾选框弹完（无论确认还是取消）都调它，把请求收掉。 */
+    fun dismissEmbedRequest() {
+        _state.update { it.copy(embedRequestKeys = null) }
     }
 
     /**
-     * 把选中的曲目的歌词 / 封面写进音频文件。
+     * 确认写标签。作用对象是界面上刚刚显示的那一批 ——
+     * 由界面把它记着的那份 key 原样传回来，不在这里现读 `selection`：
+     * 用户确认的是"我看到的这几首"，中途别的地方改了选择也不该跟着变。
+     *
+     * 这里**不清选择**：清不清是界面的决定（批量条清、单曲菜单不清），
+     * 而选中的那几首用户可能马上还要用第二个动作。
+     */
+    fun embedTagsInto(keys: Set<String>, writeLyrics: Boolean, writeArtwork: Boolean) {
+        _state.update { it.copy(embedRequestKeys = null) }
+        embedTags(keys, writeLyrics, writeArtwork)
+    }
+
+    /**
+     * 把这一组曲目的歌词 / 封面写进音频文件。
      *
      * 汇报必须区分四种结果而不是只报"成功"：文件不支持写、没权限、写失败、
      * 没有内容可写 —— 它们的处理建议完全不同（换格式 / 重新授权 / 重试 / 换个歌）。
      * 只报成功的话，用户会以为都写进去了，直到换台播放器才发现文件根本没变。
      */
-    fun batchEmbedTags(writeLyrics: Boolean, writeArtwork: Boolean) {
-        val keys = _state.value.batchEmbedTargetKeys.ifEmpty { _state.value.selection }
-        dismissBatchEmbed()
-        embedTags(keys, writeLyrics, writeArtwork, clearSelectionAfter = true)
-    }
-
-    /**
-     * 对任意一组曲目写标签，供曲库页统一调用（单曲 / 批量 / 整库）。
-     *
-     * 这里**不清选择**：清不清是界面的决定（批量条清、单曲菜单不清），
-     * 而选中的那几首用户可能马上还要用第二个动作。真正需要收尾的是
-     * 批量条那条老路径 [batchEmbedTags]，它顺带把已经不可见的选中项清掉。
-     */
-    fun embedTagsInto(keys: Set<String>, writeLyrics: Boolean, writeArtwork: Boolean) {
-        _state.update { it.copy(batchEmbedTargetKeys = emptySet()) }
-        embedTags(keys, writeLyrics, writeArtwork, clearSelectionAfter = false)
-    }
-
-    /**
-     * 对任意一组曲目写标签。
-     *
-     * 抽出来的原因就是上面两个入口：以前只有"多选中的那些"能写，
-     * 于是单曲写标签、整库写标签都得先在界面上凑出一份多选 ——
-     * 功能等于藏起来了（用户得先长按、再全选，才能对一首按菜单）。
-     */
     private fun embedTags(
         keys: Collection<String>,
         writeLyrics: Boolean,
-        writeArtwork: Boolean,
-        clearSelectionAfter: Boolean
+        writeArtwork: Boolean
     ) {
         val target = keys.toList()
         if (target.isEmpty()) return
@@ -1132,16 +1134,10 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             } else {
                 ""
             }
-            if (clearSelectionAfter) {
-                finishBatch(
-                    visible = currentlyVisible(),
-                    message = BatchOps.summary(groups, "写入") + tail
-                )
-            } else {
-                // 单曲入口没有"清掉看不见的选中项"这回事，只要收掉进度态
-                _state.update { it.copy(batchWorking = false, batchLabel = "") }
-                _messages.tryEmit(BatchOps.summary(groups, "写入") + tail)
-            }
+            // 只收掉进度态，**不动选择** —— 用户刚确认的是"眼前这几首"，
+            // 他可能马上还要用同一批做第二个动作（比如刚写完标签就去加歌单）
+            _state.update { it.copy(batchWorking = false, batchLabel = "") }
+            _messages.tryEmit(BatchOps.summary(groups, "写入") + tail)
         }
     }
 
@@ -1215,22 +1211,11 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     /**
      * 顶栏「把标签写进音频文件」被点了。
      *
-     * 这里**不直接开写** —— 写哪几首、写歌词还是封面，得先在曲库页那个两步确认框里
-     * 让用户说清楚。所以只发一个脉冲信号，由界面弹框。
      * 作用对象定为「当前视图看得见的这些」：正搜着歌时点这个，
      * 心里预期的是处理眼前这几十首，而不是把整库几百首都改一遍（而那不可撤销）。
      */
     fun requestEmbedVisible() {
-        if (currentlyVisible().isEmpty()) {
-            _messages.tryEmit("当前列表没有曲目")
-            return
-        }
-        _state.update { it.copy(embedVisibleRequested = true) }
-    }
-
-    /** 勾选框弹完（无论确认还是取消）都调它，把脉冲收掉。 */
-    fun consumeEmbedVisibleRequest() {
-        _state.update { it.copy(embedVisibleRequested = false) }
+        requestEmbed(currentlyVisible().map { it.key })
     }
 
     /** 顶栏「重新解析内嵌封面」的作用对象：当前视图看得见的这些。 */
