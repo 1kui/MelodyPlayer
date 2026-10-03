@@ -233,7 +233,9 @@ fun MelodyRoot(
                             onDeletePlaylist = { target -> pendingPlaylistDelete = target },
                             onPlayWholePlaylist = {
                                 state.activePlaylistId?.let { vm.playPlaylist(it, 0) }
-                            }
+                            },
+                            onEmbedAll = vm::requestEmbedVisible,
+                            onReparseAllEmbedded = vm::reparseVisibleEmbedded
                         )
 
                         MelodyTab.QUEUE -> QueueTopBar(
@@ -331,7 +333,13 @@ fun MelodyRoot(
                             onBatchRemoveFromPlaylist = vm::batchRemoveFromPlaylist,
                             onBatchRemoveCovers = vm::batchRemoveCovers,
                             onBatchHideSongs = vm::batchHideSongs,
-                            onBatchEmbedTags = vm::batchEmbedTags
+                            // 曲库页的写入/重读都把作用对象显式传下去：
+                            // 单曲入口、批量入口、整库入口共用同一条通道
+                            onEmbedTags = { keys, lyrics, artwork ->
+                                vm.embedTagsInto(keys, lyrics, artwork)
+                            },
+                            onReparseEmbedded = vm::reparseEmbeddedArtwork,
+                            onEmbedVisibleRequestConsumed = vm::consumeEmbedVisibleRequest
                         )
 
                         MelodyTab.QUEUE -> QueueContent(
@@ -340,6 +348,7 @@ fun MelodyRoot(
                             contentPadding = bottomPadding,
                             onPlayIndex = { index -> vm.playAll(state.queue, index) },
                             onRemoveIndex = vm::removeFromQueue,
+                            onDragIndex = { from, to -> vm.moveInQueue(from, to, announce = false) },
                             onMoveIndex = vm::moveInQueue
                         )
 
@@ -377,6 +386,7 @@ fun MelodyRoot(
                             onBackfillCovers = vm::backfillCovers,
                             onCancelBackfillCovers = vm::cancelCoverBackfill,
                             onClearCoverCache = vm::clearCoverCache,
+                            onReparseEmbedded = { vm.reparseEmbeddedArtwork() },
                             onSwipeSwitchSongChange = vm::setSwipeSwitchSong,
                             onArtworkShapeChange = vm::setArtworkShape,
                             onLyricTextSizeChange = vm::setLyricTextSize,

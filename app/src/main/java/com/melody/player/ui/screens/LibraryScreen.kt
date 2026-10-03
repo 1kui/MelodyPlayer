@@ -37,6 +37,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,7 +89,11 @@ fun LibraryTopBar(
     onCreatePlaylist: () -> Unit = {},
     onRenamePlaylist: (Playlist) -> Unit = {},
     onDeletePlaylist: (Playlist) -> Unit = {},
-    onPlayWholePlaylist: () -> Unit = {}
+    onPlayWholePlaylist: () -> Unit = {},
+    /** 对**当前可见的整份列表**写标签（不用先多选）。 */
+    onEmbedAll: () -> Unit = {},
+    /** 对当前可见的整份列表重新解析内嵌封面。 */
+    onReparseAllEmbedded: () -> Unit = {}
 ) {
     var sortMenuOpen by remember { mutableStateOf(false) }
     var importMenuOpen by remember { mutableStateOf(false) }
@@ -231,6 +236,25 @@ fun LibraryTopBar(
                             onCreatePlaylist()
                         }
                     )
+                    // 这两项以前只能从多选底部的操作条进去（要先长按 → 多选 → 滑到底），
+                    // 属于"存在但找不到"。挂到常驻的导入菜单里，等于给它们一个
+                    // 不用改变任何选择状态就能到的入口
+                    DropdownMenuItem(
+                        text = { Text("把标签写进音频文件…") },
+                        leadingIcon = { Icon(MelodyIcons.Save, null, Modifier.size(18.dp)) },
+                        onClick = {
+                            importMenuOpen = false
+                            onEmbedAll()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("重新解析内嵌封面") },
+                        leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(18.dp)) },
+                        onClick = {
+                            importMenuOpen = false
+                            onReparseAllEmbedded()
+                        }
+                    )
                 }
             }
         },
@@ -339,7 +363,18 @@ fun LibraryContent(
     onBatchRemoveFromPlaylist: () -> Unit = {},
     onBatchRemoveCovers: () -> Unit = {},
     onBatchHideSongs: () -> Unit = {},
-    onBatchEmbedTags: (writeLyrics: Boolean, writeArtwork: Boolean) -> Unit = { _, _ -> }
+    /**
+     * 对**任意一组**曲目写标签（单曲 / 多选 / 整个可见列表都走这里）。
+     *
+     * 传 key 集合而不是"用当前选中项"：多选只是三个入口之一，
+     * 让界面替调用方猜作用对象，单曲入口就会写到别人身上。
+     */
+    onEmbedTags: (keys: Set<String>, writeLyrics: Boolean, writeArtwork: Boolean) -> Unit =
+        { _, _, _ -> },
+    /** 重新读一遍这些曲目的内嵌封面；传空集合表示整个曲库。 */
+    onReparseEmbedded: (keys: Set<String>) -> Unit = {},
+    /** 顶栏那个「写进文件」被点了：这个勾选框由外部信号唤起，开完要收掉信号。 */
+    onEmbedVisibleRequestConsumed: () -> Unit = {}
 ) {
     // 取消归档会删掉 App 库里那份副本（原文件已不在时它就是仅存的一份），
     // 所以从行菜单进来也必须先确认一次，不能点一下就没
@@ -437,20 +472,38 @@ fun LibraryContent(
      * 刻意做成**先选内容、再二次确认**两步：这个操作会改用户的音频文件，
      * 不可撤销（App 没有原文件备份）。一步到位的按钮最容易让人误点，
      * 而歌词与封面分开勾是因为多数用户只想要其中一样。
+     *
+     * 目标集合是**显式传进来的 key**，不是现读 `state.selection`：
+     * 这个框有三个入口（多选批量条、单曲 ⋮ 菜单、整库），各自的作用对象不同，
+     * 让框自己去猜"用户现在选了什么"必然在单曲入口上出错。
      */
-    var pendingEmbed by remember { mutableStateOf(false) }
+    var pendingEmbed by remember { mutableStateOf<Set<String>?>(null) }
     var embedWriteLyrics by remember { mutableStateOf(true) }
     var embedWriteArtwork by remember { mutableStateOf(true) }
     var embedConfirmed by remember { mutableStateOf(false) }
 
-    if (pendingEmbed) {
+    /**
+     * 顶栏那个「把标签写进音频文件…」的落点。
+     *
+     * 按钮在顶栏、这个勾选框在曲库页，跨着一层，所以由外部发信号、这里开框。
+     * 目标取 `shown`（当前视图真正看得见的那些）而不是整个曲库：
+     * 搜索着点这个按钮的人，预期是处理眼前这几十首。
+     */
+    LaunchedEffect(state.embedVisibleRequested) {
+        if (state.embedVisibleRequested && shown.isNotEmpty()) {
+            pendingEmbed = shown.mapTo(LinkedHashSet()) { it.key }
+        }
+        onEmbedVisibleRequestConsumed()
+    }
+
+    pendingEmbed?.let { embedTargets ->
         AlertDialog(
-            onDismissRequest = { pendingEmbed = false },
+            onDismissRequest = { pendingEmbed = null },
             title = { Text("把内容写进音频文件？") },
             text = {
                 Column {
                     Text(
-                        "将修改 ${state.selectedCount} 个音频文件的标签。",
+                        "将修改 ${embedTargets.size} 个音频文件的标签。",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Spacer(Modifier.height(12.dp))
@@ -514,9 +567,9 @@ fun LibraryContent(
                             // 不可撤销的操作值得多一次确认
                             embedConfirmed = true
                         } else {
-                            pendingEmbed = false
+                            pendingEmbed = null
                             embedConfirmed = false
-                            onBatchEmbedTags(embedWriteLyrics, embedWriteArtwork)
+                            onEmbedTags(embedTargets, embedWriteLyrics, embedWriteArtwork)
                         }
                     }
                 ) { Text(if (embedConfirmed) "确认修改文件" else "下一步") }
@@ -524,7 +577,7 @@ fun LibraryContent(
             dismissButton = {
                 TextButton(
                     onClick = {
-                        pendingEmbed = false
+                        pendingEmbed = null
                         embedConfirmed = false
                     }
                 ) { Text("取消") }
@@ -654,6 +707,8 @@ fun LibraryContent(
                             },
                             onHide = { onHideSong(song) },
                             onFetchCover = { onFetchCover(song) },
+                            onEmbedTags = { pendingEmbed = setOf(song.key) },
+                            onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
                             onEditSong = { onEditSong(song) },
                             onArchive = if (song.archived) null else {
                                 { onArchiveSong(song) }
@@ -720,6 +775,9 @@ fun LibraryContent(
                                         )
                                         append("；长按任意一行可进入多选，批量加入歌单/去封面/隐藏")
                                         append("；不想听的点该行右侧 ⋮ →「隐藏这首」")
+                                        append("；想把歌词或封面写进音频文件，点该行 ⋮ →「写入文件标签…」")
+                                        append("，或用右上角菜单里的「把标签写进音频文件…」一次处理整个列表")
+                                        append("；在别的播放器里换过封面的话，点 ⋮ →「重新解析内嵌封面」重读一遍")
                                         append("；怕误删的点 ⋮ →「归档到 App 库」")
                                         if (state.archivedCount > 0) {
                                             append("，已归档的那几行可以在 ⋮ 里「取消归档」")
@@ -760,7 +818,11 @@ fun LibraryContent(
                 onRemoveFromPlaylist = onBatchRemoveFromPlaylist,
                 onRemoveCovers = { pendingBatchCoverRemoval = true },
                 onHide = onBatchHideSongs,
-                onEmbed = { pendingEmbed = true },
+                onEmbed = { pendingEmbed = state.selection },
+                onReparse = {
+                    onReparseEmbedded(state.selection)
+                    onClearSelection()
+                },
                 modifier = Modifier.padding(bottom = contentPadding.calculateBottomPadding())
             )
         }
@@ -787,6 +849,7 @@ private fun BatchActionBar(
     onRemoveCovers: () -> Unit,
     onHide: () -> Unit,
     onEmbed: () -> Unit,
+    onReparse: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -848,11 +911,18 @@ private fun BatchActionBar(
                     onClick = onHide
                 )
                 // 「写进文件」与上面几个性质不同：那几个只改 App 的数据，
-                // 这个会**改动用户的音频文件**，所以入口摆在最后、且要点确认框
+                // 这个会**改动用户的音频文件**，所以入口摆在最后、且要点确认框。
+                // 「重读内嵌封面」紧挨着它：这两个是一对 —— 一个往文件里写，
+                // 一个从文件里读，放一起才看得出这是同一件事的两头
                 BatchChip(
                     text = "写进文件",
                     icon = MelodyIcons.Save,
                     onClick = onEmbed
+                )
+                BatchChip(
+                    text = "重读内嵌封面",
+                    icon = MelodyIcons.Refresh,
+                    onClick = onReparse
                 )
             }
             if (inPlaylist && playlistName != null) {

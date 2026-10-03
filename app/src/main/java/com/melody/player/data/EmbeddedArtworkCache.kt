@@ -40,13 +40,23 @@ class EmbeddedArtworkCache(context: Context) {
      * 取这首歌内嵌的封面字节；没有 / 读不到返回 null。
      *
      * 命中缓存时**同步返回**：这是曲库滚动路径，异步会导致每次滚动都闪一下占位图。
+     *
+     * [force] 为 true 时**跳过缓存**重新读一遍文件，并把结果（哪怕是 null）写回缓存。
+     * 用户在别的播放器里换了封面、又用别的工具改过文件时，缓存里那份已经过期，
+     * 而界面上还照着旧字节画 —— 这时只有重新读文件才能对上（见 `reparseEmbedded`）。
      */
-    suspend fun get(song: Song): ByteArray? {
-        bytes.get(song.key)?.let { return it }
+    suspend fun get(song: Song, force: Boolean = false): ByteArray? {
+        if (!force) bytes.get(song.key)?.let { return it }
         return withContext(Dispatchers.IO) {
-            val parsed = openSource(song)?.use { EmbeddedArtworkParser.parse(it) } ?: return@withContext null
+            val parsed = openSource(song)?.use { EmbeddedArtworkParser.parse(it) }
             // 超大图不进内存缓存：几百首这种歌会把 LruCache 撑爆，
             // 而实际曲库里几乎不会有这种文件
+            if (parsed == null) {
+                // 强制重解析时读到"没有"也要覆盖旧值：文件里的封面被别的工具删掉了，
+                // 缓存里留着一份就会让删除看起来没生效
+                if (force) bytes.remove(song.key)
+                return@withContext null
+            }
             if (parsed.bytes.size <= MAX_CACHED_BYTES) bytes.put(song.key, parsed.bytes)
             parsed.bytes
         }
@@ -66,6 +76,27 @@ class EmbeddedArtworkCache(context: Context) {
 
     fun clear() {
         bytes.evictAll()
+    }
+
+    /**
+     * 强制重新解析一批曲目的内嵌封面，返回**确实带内嵌封面**的 key 集合。
+     *
+     * 循环放在这里而不是 ViewModel，是因为"丢缓存 → 重读 → 回填"这三步必须贴着
+     * 缓存的实现走：漏了回填这一步，界面刷新后又会各自去读一遍盘，
+     * 几百首歌就是几百次重复 IO。
+     *
+     * [onProgress] 每处理一首回调一次（已处理数），界面据此显示进度。
+     */
+    suspend fun reparse(
+        songs: List<Song>,
+        onProgress: (suspend (done: Int, total: Int) -> Unit)? = null
+    ): Set<String> = withContext(Dispatchers.IO) {
+        val found = LinkedHashSet<String>()
+        songs.forEachIndexed { index, song ->
+            if (get(song, force = true) != null) found.add(song.key)
+            onProgress?.invoke(index + 1, songs.size)
+        }
+        found
     }
 
     /**

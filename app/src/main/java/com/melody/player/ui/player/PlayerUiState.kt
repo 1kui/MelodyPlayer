@@ -79,6 +79,16 @@ data class PlayerUiState(
     val batchEmbedTargetKeys: Set<String> = emptySet(),
 
     /**
+     * 顶栏「把标签写进音频文件」被点了。
+     *
+     * 是个**脉冲**而不是持久状态：勾选框在 [com.melody.player.ui.screens.LibraryContent]
+     * 里（连同"写哪几首"的上下文），而按钮在顶栏，两者隔着一层。
+     * 用一次性信号把请求送过去，界面弹完框就把它清掉 ——
+     * 留成 true 的话，下次进曲库会莫名又弹一次框。
+     */
+    val embedVisibleRequested: Boolean = false,
+
+    /**
      * 批量「加入歌单」正在为哪些歌选目标；非空时界面弹出歌单选择列表。
      *
      * 与 [playlistAddTarget] 分开是因为后者是单曲、这个是一批，

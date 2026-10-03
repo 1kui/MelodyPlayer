@@ -1,6 +1,7 @@
 package com.melody.player.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,6 +72,20 @@ fun SongRow(
     /** 已经有 App 库副本（本条就是副本，或它的原文件已归档）。 */
     archived: Boolean = false,
     /**
+     * 把这一首的歌词 / 封面写进音频文件。
+     *
+     * 之前这个功能只挂在多选底部的「写进文件」里，要长按进多选才找得到 ——
+     * 而多数用户想写的就是眼前这一首。放进单曲菜单是最短的路径。
+     */
+    onEmbedTags: (() -> Unit)? = null,
+    /**
+     * 重新读一遍这个文件里的内嵌封面。
+     *
+     * 存在的理由：封面有缓存，而用户可能刚在别的播放器/工具里换了图。
+     * 不给一条显式重读的入口，就只能靠重启 App 清缓存。
+     */
+    onReparseEmbedded: (() -> Unit)? = null,
+    /**
      * 多选模式下这一行处于选中状态。
      *
      * 为 null 时就是普通单选态：不出复选框、行菜单照常。
@@ -81,7 +96,16 @@ fun SongRow(
     /** 多选模式下点这一行（切换选中）。 */
     onToggleSelect: (() -> Unit)? = null,
     /** 长按进入多选并选中这一首。 */
-    onBeginSelection: (() -> Unit)? = null
+    onBeginSelection: (() -> Unit)? = null,
+    /**
+     * 禁掉这一行内建的**长按**手势，只保留单击。
+     *
+     * 队列页要自己用长按拖动排序，而 `combinedClickable` 与外层的
+     * `detectDragGesturesAfterLongPress` 是两个**互相竞争**的长按识别器：
+     * 谁先判定成"长按"另一个就废掉，表现是拖动时而行不行、时而行。
+     * 所以这里给行本身一个"我只负责单击"的开关，而不是在外面硬碰手势。
+     */
+    longPressEnabled: Boolean = true
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val selectionMode = selected != null
@@ -94,13 +118,21 @@ fun SongRow(
             // combinedClickable 而不是 clickable：长按是多选的入口，而 clickable 只给单击回调。
             // 已在多选态时长按不再嵌套进多选，改为切换这一行的选中 —— 长按去做"再确认一次"
             // 比什么都不做强，尤其是批量操作中途想再勾两首的时候。
-            .combinedClickable(
-                onClick = { (if (selectionMode) onToggleSelect ?: onClick else onClick)() },
-                onLongClick = {
-                    if (onBeginSelection != null || onToggleSelect != null) {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        if (selectionMode) onToggleSelect?.invoke() else onBeginSelection?.invoke()
-                    }
+            // longPressEnabled = false 时退回纯 clickable：调用方（队列页）自己接长按拖动，
+            // 两个长按识别器同时挂在同一行上会互相抢手势。
+            .then(
+                if (longPressEnabled) {
+                    Modifier.combinedClickable(
+                        onClick = { (if (selectionMode) onToggleSelect ?: onClick else onClick)() },
+                        onLongClick = {
+                            if (onBeginSelection != null || onToggleSelect != null) {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (selectionMode) onToggleSelect?.invoke() else onBeginSelection?.invoke()
+                            }
+                        }
+                    )
+                } else {
+                    Modifier.clickable { onClick() }
                 }
             )
             .padding(
@@ -204,6 +236,29 @@ fun SongRow(
                             onClick = {
                                 menuOpen = false
                                 onFetchCover()
+                            }
+                        )
+                    }
+                    // 写文件 / 重读内嵌封面紧跟在「选择专辑封面」后面：
+                    // 这三件事是一条线上的 —— 先挑图，再决定要不要写进文件，
+                    // 以及文件里那份是不是已经过期了。隔开了就要来回翻菜单。
+                    if (onEmbedTags != null) {
+                        DropdownMenuItem(
+                            text = { Text("写入文件标签…") },
+                            leadingIcon = { Icon(MelodyIcons.Save, null, Modifier.size(20.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onEmbedTags()
+                            }
+                        )
+                    }
+                    if (onReparseEmbedded != null) {
+                        DropdownMenuItem(
+                            text = { Text("重新解析内嵌封面") },
+                            leadingIcon = { Icon(MelodyIcons.Refresh, null, Modifier.size(20.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                onReparseEmbedded()
                             }
                         )
                     }

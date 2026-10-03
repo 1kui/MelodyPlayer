@@ -1028,9 +1028,38 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
      * 只报成功的话，用户会以为都写进去了，直到换台播放器才发现文件根本没变。
      */
     fun batchEmbedTags(writeLyrics: Boolean, writeArtwork: Boolean) {
-        val keys = _state.value.batchEmbedTargetKeys.ifEmpty { _state.value.selection }.toList()
+        val keys = _state.value.batchEmbedTargetKeys.ifEmpty { _state.value.selection }
         dismissBatchEmbed()
-        if (keys.isEmpty()) return
+        embedTags(keys, writeLyrics, writeArtwork, clearSelectionAfter = true)
+    }
+
+    /**
+     * 对任意一组曲目写标签，供曲库页统一调用（单曲 / 批量 / 整库）。
+     *
+     * 这里**不清选择**：清不清是界面的决定（批量条清、单曲菜单不清），
+     * 而选中的那几首用户可能马上还要用第二个动作。真正需要收尾的是
+     * 批量条那条老路径 [batchEmbedTags]，它顺带把已经不可见的选中项清掉。
+     */
+    fun embedTagsInto(keys: Set<String>, writeLyrics: Boolean, writeArtwork: Boolean) {
+        _state.update { it.copy(batchEmbedTargetKeys = emptySet()) }
+        embedTags(keys, writeLyrics, writeArtwork, clearSelectionAfter = false)
+    }
+
+    /**
+     * 对任意一组曲目写标签。
+     *
+     * 抽出来的原因就是上面两个入口：以前只有"多选中的那些"能写，
+     * 于是单曲写标签、整库写标签都得先在界面上凑出一份多选 ——
+     * 功能等于藏起来了（用户得先长按、再全选，才能对一首按菜单）。
+     */
+    private fun embedTags(
+        keys: Collection<String>,
+        writeLyrics: Boolean,
+        writeArtwork: Boolean,
+        clearSelectionAfter: Boolean
+    ) {
+        val target = keys.toList()
+        if (target.isEmpty()) return
         if (!writeLyrics && !writeArtwork) {
             _messages.tryEmit("至少要选一项：写歌词或写封面")
             return
@@ -1046,14 +1075,14 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             val missing = LinkedHashSet<String>()
             val doneContainers = LinkedHashSet<String>()
 
-            for ((index, key) in keys.withIndex()) {
+            for ((index, key) in target.withIndex()) {
                 val song = byKey[key]
                 if (song == null) {
                     missing.add(key)
                     continue
                 }
                 _state.update {
-                    it.copy(batchLabel = "正在写入 ${index + 1}/${keys.size}：${song.title}")
+                    it.copy(batchLabel = "正在写入 ${index + 1}/${target.size}：${song.title}")
                 }
 
                 // 歌词取「当前这一首实际在用的那份」，而不是重新去联网匹配 ——
@@ -1103,11 +1132,68 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             } else {
                 ""
             }
-            finishBatch(
-                visible = currentlyVisible(),
-                message = BatchOps.summary(groups, "写入") + tail
+            if (clearSelectionAfter) {
+                finishBatch(
+                    visible = currentlyVisible(),
+                    message = BatchOps.summary(groups, "写入") + tail
+                )
+            } else {
+                // 单曲入口没有"清掉看不见的选中项"这回事，只要收掉进度态
+                _state.update { it.copy(batchWorking = false, batchLabel = "") }
+                _messages.tryEmit(BatchOps.summary(groups, "写入") + tail)
+            }
+        }
+    }
+
+    // ------------------------------------------------ 重新解析内嵌封面
+
+    /**
+     * 重新读一遍内嵌封面。
+     *
+     * [keys] 为空时按「当前可见的曲目」处理 —— 设置页里没有"当前列表"的概念，
+     * 传空集合就意味着"整个曲库"。
+     *
+     * 汇报里必须给出**带内嵌封面的首数**：用户按下这个按钮，多半是刚在别的
+     * 播放器里换了图，想知道换没换成功。只说"已重新解析"的话，
+     * 他还是得自己一首一首点回去看。
+     */
+    fun reparseEmbeddedArtwork(keys: Collection<String> = emptyList()) {
+        val scope = allSongs
+        val targets = if (keys.isEmpty()) {
+            scope
+        } else {
+            val byKey = scope.associateBy { it.key }
+            keys.mapNotNull { byKey[it] }
+        }
+        if (targets.isEmpty()) {
+            _messages.tryEmit("曲库里没有可解析的曲目")
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(batchWorking = true, batchLabel = "正在重新解析内嵌封面…") }
+            val found = embeddedArt.reparse(targets) { done, total ->
+                _state.update {
+                    it.copy(batchLabel = "正在重新解析 $done/$total 首的内嵌封面")
+                }
+            }
+            // 缓存里已经是新字节，通知一次让所有封面重画
+            notifyCoverChanged()
+            // 正在播放的那首要把通知栏的图也换掉，否则队列/播放页变了、通知栏还是旧的
+            _state.value.currentSong?.let { republishSong(it) }
+            _state.update { it.copy(batchWorking = false, batchLabel = "") }
+            _messages.tryEmit(
+                if (found.isEmpty()) {
+                    "重新解析完毕：${targets.size} 首里没有一首带内嵌封面"
+                } else {
+                    "重新解析完毕：${targets.size} 首里有 ${found.size} 首带内嵌封面"
+                }
             )
         }
+    }
+
+    /** 单曲的「重新解析内嵌封面」。 */
+    fun reparseEmbeddedForSong(song: Song) {
+        reparseEmbeddedArtwork(listOf(song.key))
     }
 
     /**
@@ -1124,6 +1210,33 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         } else {
             state.filtered
         }
+    }
+
+    /**
+     * 顶栏「把标签写进音频文件」被点了。
+     *
+     * 这里**不直接开写** —— 写哪几首、写歌词还是封面，得先在曲库页那个两步确认框里
+     * 让用户说清楚。所以只发一个脉冲信号，由界面弹框。
+     * 作用对象定为「当前视图看得见的这些」：正搜着歌时点这个，
+     * 心里预期的是处理眼前这几十首，而不是把整库几百首都改一遍（而那不可撤销）。
+     */
+    fun requestEmbedVisible() {
+        if (currentlyVisible().isEmpty()) {
+            _messages.tryEmit("当前列表没有曲目")
+            return
+        }
+        _state.update { it.copy(embedVisibleRequested = true) }
+    }
+
+    /** 勾选框弹完（无论确认还是取消）都调它，把脉冲收掉。 */
+    fun consumeEmbedVisibleRequest() {
+        _state.update { it.copy(embedVisibleRequested = false) }
+    }
+
+    /** 顶栏「重新解析内嵌封面」的作用对象：当前视图看得见的这些。 */
+    fun reparseVisibleEmbedded() {
+        val keys = currentlyVisible().mapTo(LinkedHashSet()) { it.key }
+        reparseEmbeddedArtwork(keys)
     }
 
     // ------------------------------------------------------ 曲库只扫描指定文件夹
@@ -1817,13 +1930,21 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     }
 
     /**
-     * 把队列里的某一首挪到另一个位置（队列页的「上移 / 下移」）。
+     * 把队列里的某一首挪到另一个位置（队列页的「上移 / 下移」和拖动排序共用）。
      *
      * 下标能直接用，是因为队列就是控制器的时间线（见 [deriveQueue]）。
      * Media3 的 `moveMediaItem` 与 Kotlin 的 `removeAt` + `add(to, …)` 语义一致：
      * 都是先摘出来再插到 `to`。
      */
-    fun moveInQueue(from: Int, to: Int) {
+    fun moveInQueue(from: Int, to: Int) = moveInQueue(from, to, announce = true)
+
+    /**
+     * 拖动排序专用：[announce] 为 false 时不弹提示。
+     *
+     * 一次拖动可能连换十几位，每换一位弹一条「已调整顺序」会把提示条刷成幻灯片，
+     * 真正需要确认的反而是最后那条。拖动本身就是实时可见的反馈，不需要中途解说。
+     */
+    fun moveInQueue(from: Int, to: Int, announce: Boolean) {
         val queue = _state.value.queue
         if (from == to || from !in queue.indices || to !in queue.indices) return
         withController { c ->
@@ -1833,6 +1954,9 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
             it.copy(queue = queue.toMutableList().apply { add(to, removeAt(from)) })
         }
         syncFromController()
+        if (announce) {
+            _messages.tryEmit("「${queue[from].title}」移到第 ${to + 1} 位")
+        }
     }
 
     fun clearQueue() {

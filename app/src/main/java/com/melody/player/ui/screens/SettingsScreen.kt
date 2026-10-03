@@ -204,6 +204,8 @@ fun SettingsContent(
     onBackfillCovers: () -> Unit,
     onCancelBackfillCovers: () -> Unit,
     onClearCoverCache: () -> Unit,
+    /** 重新解析整个曲库的内嵌封面（丢缓存重读文件）。 */
+    onReparseEmbedded: () -> Unit,
     onSwipeSwitchSongChange: (Boolean) -> Unit,
     onArtworkShapeChange: (ArtworkShape) -> Unit,
     onLyricTextSizeChange: (LyricTextSize) -> Unit,
@@ -954,6 +956,17 @@ fun SettingsContent(
                         modifier = Modifier.weight(1f)
                     )
                 }
+                // 「重读内嵌封面」与上面两个是**不同层的事**，所以单独一行：
+                // 上面清的是 App 自己下的缓存，这里丢的是"文件里那张"的解析结果。
+                // 用户在别的播放器里换过图之后，只有这个能让他在 App 里看到新图。
+                RowDivider()
+                SettingRow(
+                    icon = MelodyIcons.Refresh,
+                    title = "重新解析内嵌封面",
+                    subtitle = "丢掉缓存、从音频文件里重读一遍封面。" +
+                        "在别的播放器里换过图时用这个；扫完会告诉你有几首真的带封面",
+                    onClick = onReparseEmbedded
+                )
 
                 if (state.coverWorking) {
                     Column(modifier = Modifier.padding(horizontal = CardPad, vertical = 6.dp)) {
