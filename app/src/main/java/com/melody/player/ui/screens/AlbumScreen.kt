@@ -44,15 +44,8 @@ import com.melody.player.ui.player.PlayerUiState
 internal class LibrarySongActions(
     val onPlayNext: (Song) -> Unit,
     val onHideSong: (Song) -> Unit,
-    val onFetchCover: (Song) -> Unit,
     val onEditSong: (Song) -> Unit,
     val onAddToPlaylist: (Song) -> Unit,
-    /** 把这一首的歌词/封面写进音频文件（根界面弹勾选框）。 */
-    val onRequestEmbed: (Song) -> Unit,
-    /** 重读这一首文件里的内嵌封面。 */
-    val onReparseEmbedded: (Song) -> Unit,
-    /** 看这一首在 App 里存了哪几份歌词副本。 */
-    val onManageLyricCopies: (Song) -> Unit,
     /** 归档这首 / 取消归档（详情页的 ⋮ 里也能做）。 */
     val onArchiveSong: (Song) -> Unit,
     val onUnarchiveSong: (Song) -> Unit
@@ -271,12 +264,8 @@ private fun DetailSongRow(
         onClick = onPlay,
         onPlayNext = { actions.onPlayNext(song) },
         onHide = { actions.onHideSong(song) },
-        onFetchCover = { actions.onFetchCover(song) },
         onEditSong = { actions.onEditSong(song) },
         onAddToPlaylist = { actions.onAddToPlaylist(song) },
-        onEmbedTags = { actions.onRequestEmbed(song) },
-        onReparseEmbedded = { actions.onReparseEmbedded(song) },
-        onManageLyricCopies = { actions.onManageLyricCopies(song) },
         onArchive = if (song.archived) null else ({ actions.onArchiveSong(song) }),
         onUnarchive = if (song.archived) ({ actions.onUnarchiveSong(song) }) else null,
         archived = song.archived,

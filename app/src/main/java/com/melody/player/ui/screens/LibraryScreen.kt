@@ -106,11 +106,7 @@ fun LibraryTopBar(
     onCreatePlaylist: () -> Unit = {},
     onRenamePlaylist: (Playlist) -> Unit = {},
     onDeletePlaylist: (Playlist) -> Unit = {},
-    onPlayWholePlaylist: () -> Unit = {},
-    /** 对**当前可见的整份列表**写标签（不用先多选）。 */
-    onEmbedAll: () -> Unit = {},
-    /** 对当前可见的整份列表重新解析内嵌封面。 */
-    onReparseAllEmbedded: () -> Unit = {}
+    onPlayWholePlaylist: () -> Unit = {}
 ) {
     var sortMenuOpen by remember { mutableStateOf(false) }
     var playlistMenuOpen by remember { mutableStateOf(false) }
@@ -262,28 +258,11 @@ fun LibraryTopBar(
                                     )
                                 )
                             }
-                            // 这两项以前只能从多选底部的操作条进去（要先长按 → 多选 → 滑到底），
-                            // 属于"存在但找不到"。放在这里等于给它们一个
-                            // 不用改变任何选择状态就能到的入口
-                            add(
-                                SheetAction(
-                                    icon = MelodyIcons.Save,
-                                    title = "把标签写进音频文件…",
-                                    subtitle = "对当前列表里的每一首，写入后无法撤销",
-                                    section = "标签与封面",
-                                    enabled = totalCount > 0,
-                                    onClick = onEmbedAll
-                                )
-                            )
-                            add(
-                                SheetAction(
-                                    icon = MelodyIcons.Refresh,
-                                    title = "重新解析内嵌封面",
-                                    subtitle = "重读文件里的封面（在别的播放器换过图时用）",
-                                    enabled = totalCount > 0,
-                                    onClick = onReparseAllEmbedded
-                                )
-                            )
+                            // 这里原来还有「把标签写进音频文件…」与「重新解析内嵌封面」两项。
+                            // 撤掉的理由与单曲菜单里那两组一样：**改一首歌 / 一批歌本身**的动作
+                            // 统一归到播放页的 ⋮（单曲）与多选批量条（一批），
+                            // 曲库页只留"跟这个列表有关"的：扫一遍、导进来、新建歌单、换浏览方式。
+                            // 顶栏这个菜单一屏就能读完，比原来要滑一下才看得完要值。
                             // 浏览方式从首屏那一排分段控件搬到这里。
                             // 没把它直接删掉是因为专辑 / 歌手是"按对象找歌"的另一条路
                             // （"我想听那张专辑"而不是"我记得歌名"）—— 首屏不该为它空出一整行，
@@ -356,7 +335,6 @@ fun LibraryContent(
     onRefresh: () -> Unit,
     onImportAudio: () -> Unit,
     onRestoreHidden: () -> Unit,
-    onFetchCover: (Song) -> Unit,
     onEditSong: (Song) -> Unit,
     modifier: Modifier = Modifier,
     onSelectPlaylist: (String?) -> Unit = {},
@@ -473,24 +451,16 @@ fun LibraryContent(
     val songActions = remember(
         onPlayNext,
         onHideSong,
-        onFetchCover,
         onEditSong,
         onAddToPlaylist,
-        onRequestEmbed,
-        onReparseEmbedded,
-        onManageLyricCopies,
         onArchiveSong,
         onUnarchiveSong
     ) {
         LibrarySongActions(
             onPlayNext = onPlayNext,
             onHideSong = onHideSong,
-            onFetchCover = onFetchCover,
             onEditSong = onEditSong,
             onAddToPlaylist = onAddToPlaylist,
-            onRequestEmbed = { onRequestEmbed(setOf(it.key)) },
-            onReparseEmbedded = { onReparseEmbedded(setOf(it.key)) },
-            onManageLyricCopies = { onManageLyricCopies(setOf(it.key)) },
             onArchiveSong = onArchiveSong,
             onUnarchiveSong = onUnarchiveSong
         )
@@ -619,7 +589,11 @@ fun LibraryContent(
 
         Box(modifier = Modifier.weight(1f)) {
             when {
-                state.loading -> LoadingState(scanLabel = state.scanLabel)
+                state.loading -> LoadingState(
+                    scanLabel = state.scanLabel,
+                    // 同理：转圈要落在"没被播放条盖住"的那块区域的正中间
+                    modifier = Modifier.padding(bottom = contentPadding.calculateBottomPadding())
+                )
 
                 !state.permissionGranted -> EmptyState(
                     icon = MelodyIcons.Folder,
@@ -628,7 +602,15 @@ fun LibraryContent(
                     action = {
                         Button(onClick = onRequestPermission) { Text("授予权限") }
                     },
-                    modifier = Modifier.align(Alignment.Center)
+                    // 底部那段内边距**必须**补上：内容区是从顶栏一直铺到底的，
+                    // 迷你播放条与底部导航是**盖在它上面**画的（见 MelodyRoot 里那份
+                    // 只算 top 的 innerPadding）。不补的话"回到全部歌曲"这类按钮
+                    // 会被播放条压住一半 —— 点不到，也看不出是按钮。
+                    // 加在 padding 上而不是把整个 Box 缩短：列表有自己的 contentPadding，
+                    // 缩短容器会让列表底部凭空多出一截空白。
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = contentPadding.calculateBottomPadding())
                 )
 
                 // 歌单视图不看 hasLibrary：整库被隐藏光了，但歌单里点名的几首照样要能播
@@ -640,7 +622,15 @@ fun LibraryContent(
                     action = {
                         Button(onClick = { onSelectPlaylist(null) }) { Text("回到全部歌曲") }
                     },
-                    modifier = Modifier.align(Alignment.Center)
+                    // 底部那段内边距**必须**补上：内容区是从顶栏一直铺到底的，
+                    // 迷你播放条与底部导航是**盖在它上面**画的（见 MelodyRoot 里那份
+                    // 只算 top 的 innerPadding）。不补的话"回到全部歌曲"这类按钮
+                    // 会被播放条压住一半 —— 点不到，也看不出是按钮。
+                    // 加在 padding 上而不是把整个 Box 缩短：列表有自己的 contentPadding，
+                    // 缩短容器会让列表底部凭空多出一截空白。
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = contentPadding.calculateBottomPadding())
                 )
 
                 inPlaylist && shown.isEmpty() -> EmptyState(
@@ -650,7 +640,15 @@ fun LibraryContent(
                     action = {
                         Button(onClick = { onQueryChange("") }) { Text("清空搜索") }
                     },
-                    modifier = Modifier.align(Alignment.Center)
+                    // 底部那段内边距**必须**补上：内容区是从顶栏一直铺到底的，
+                    // 迷你播放条与底部导航是**盖在它上面**画的（见 MelodyRoot 里那份
+                    // 只算 top 的 innerPadding）。不补的话"回到全部歌曲"这类按钮
+                    // 会被播放条压住一半 —— 点不到，也看不出是按钮。
+                    // 加在 padding 上而不是把整个 Box 缩短：列表有自己的 contentPadding，
+                    // 缩短容器会让列表底部凭空多出一截空白。
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = contentPadding.calculateBottomPadding())
                 )
 
                 !inPlaylist && !state.hasLibrary -> if (state.hiddenSongs.isNotEmpty()) EmptyState(
@@ -664,7 +662,15 @@ fun LibraryContent(
                             FilledTonalButton(onClick = onRefresh) { Text("重新扫描") }
                         }
                     },
-                    modifier = Modifier.align(Alignment.Center)
+                    // 底部那段内边距**必须**补上：内容区是从顶栏一直铺到底的，
+                    // 迷你播放条与底部导航是**盖在它上面**画的（见 MelodyRoot 里那份
+                    // 只算 top 的 innerPadding）。不补的话"回到全部歌曲"这类按钮
+                    // 会被播放条压住一半 —— 点不到，也看不出是按钮。
+                    // 加在 padding 上而不是把整个 Box 缩短：列表有自己的 contentPadding，
+                    // 缩短容器会让列表底部凭空多出一截空白。
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = contentPadding.calculateBottomPadding())
                 ) else EmptyState(
                     icon = MelodyIcons.MusicNote,
                     title = "没有找到本地音乐",
@@ -682,7 +688,15 @@ fun LibraryContent(
                             FilledTonalButton(onClick = onImportAudio) { Text("从文件导入") }
                         }
                     },
-                    modifier = Modifier.align(Alignment.Center)
+                    // 底部那段内边距**必须**补上：内容区是从顶栏一直铺到底的，
+                    // 迷你播放条与底部导航是**盖在它上面**画的（见 MelodyRoot 里那份
+                    // 只算 top 的 innerPadding）。不补的话"回到全部歌曲"这类按钮
+                    // 会被播放条压住一半 —— 点不到，也看不出是按钮。
+                    // 加在 padding 上而不是把整个 Box 缩短：列表有自己的 contentPadding，
+                    // 缩短容器会让列表底部凭空多出一截空白。
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = contentPadding.calculateBottomPadding())
                 )
 
                 else -> when {
@@ -768,10 +782,6 @@ fun LibraryContent(
                                     else onPlayNext(song)
                                 },
                                 onHide = { onHideSong(song) },
-                                onFetchCover = { onFetchCover(song) },
-                                onEmbedTags = { onRequestEmbed(setOf(song.key)) },
-                                onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
-                                onManageLyricCopies = { onManageLyricCopies(setOf(song.key)) },
                                 onEditSong = { onEditSong(song) },
                                 onArchive = if (song.archived) null else {
                                     { onArchiveSong(song) }
@@ -1009,9 +1019,9 @@ private fun BatchChip(
 }
 
 @Composable
-private fun LoadingState(scanLabel: String = "") {
+private fun LoadingState(scanLabel: String = "", modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {

@@ -81,8 +81,6 @@ fun SongRow(
     removeStyle: RemoveStyle = RemoveStyle.LIBRARY,
     onArchive: (() -> Unit)? = null,
     onUnarchive: (() -> Unit)? = null,
-    /** 手动联网取这张专辑封面（本地标签里没有封面时用户会想试一下）。 */
-    onFetchCover: (() -> Unit)? = null,
     /** 改这首歌的歌名/歌手/专辑（App 内显示，不动文件）。 */
     onEditSong: (() -> Unit)? = null,
     /** 把这首歌加进某个自建歌单（会弹出歌单选择）。 */
@@ -95,28 +93,11 @@ fun SongRow(
     onRemoveFromPlaylist: (() -> Unit)? = null,
     /** 已经有 App 库副本（本条就是副本，或它的原文件已归档）。 */
     archived: Boolean = false,
-    /**
-     * 把这一首的歌词 / 封面写进音频文件（会弹出勾选框确认）。
-     *
-     * 之前这个功能只挂在多选底部的「写进文件」里，要长按进多选才找得到 ——
-     * 而多数用户想写的就是眼前这一首。放进单曲菜单是最短的路径。
-     */
-    onEmbedTags: (() -> Unit)? = null,
-    /**
-     * 重新读一遍这个文件里的内嵌封面。
-     *
-     * 存在的理由：封面有缓存，而用户可能刚在别的播放器/工具里换了图。
-     * 不给一条显式重读的入口，就只能靠重启 App 清缓存。
-     */
-    onReparseEmbedded: (() -> Unit)? = null,
-    /**
-     * 看一眼这首歌在 App 里存了哪几份歌词副本（可预览、可删）。
-     *
-     * 这个入口以前只长在**设置页**里（那份按全库列出的清单）—— 而用户的念头从来
-     * 不是"我要去整理歌词目录"，是"这首歌的歌词不对劲"。放在这一行的菜单里，
-     * 就是把他正看着的那首直接送进去。
-     */
-    onManageLyricCopies: (() -> Unit)? = null,
+    // 这里**故意**没有「选择专辑封面 / 重新解析内嵌封面 / 写入文件标签 / 歌词副本」——
+    // 这四件事改的都是"这首歌本身"，它们统一在**播放页的 ⋮** 里（那儿的抬头就是这一首的
+    // 封面与歌名，做这些事时看得到对象）。以前列表页这一行也挂着一份，同一个功能两个入口、
+    // 两处文案，列表页的菜单还因此长到要滑一段才读完。
+    // 要对**一批**歌做这些事仍然可以：长按进多选 → 底部批量条（写进文件 / 重新解析 / 歌词副本）。
     /**
      * 多选模式下这一行处于选中状态。
      *
@@ -271,10 +252,6 @@ fun SongRow(
                             onMoveUp = onMoveUp,
                             onMoveDown = onMoveDown,
                             onRemoveFromPlaylist = onRemoveFromPlaylist,
-                            onFetchCover = onFetchCover,
-                            onReparseEmbedded = onReparseEmbedded,
-                            onEmbedTags = onEmbedTags,
-                            onManageLyricCopies = onManageLyricCopies,
                             onEditSong = onEditSong,
                             onArchive = onArchive,
                             onUnarchive = onUnarchive,
@@ -298,8 +275,14 @@ fun SongRow(
  * `if (xxx != null)` 里，加一个功能就得回头读一遍才能确定顺序。
  *
  * 顺序按用户自己的思路排，而不是按实现的历史：
- *   播放 → 歌单 → 封面与标签 → 歌曲信息 → 曲库管理
+ *   播放 → 歌单 → 歌曲信息 → 曲库管理
  * 越靠下越"重"（改文件、丢东西），红色只给真正丢东西的那几个。
+ *
+ * 菜单里只剩这几组：**改这首歌本身的那些动作（换封面、写标签、歌词副本）已经搬去
+ * 播放页的 ⋮**。原因不是"少几个字"，而是这一行上原来有十一个菜单项 ——
+ * 打开要先滑一段才看得完，找「隐藏这首」得从「写入文件标签」底下翻过去。
+ * 留在这一行的都是"跟当前这个列表有关"的：播放、放进哪个歌单、排歌单顺序、
+ * 改显示信息、归档 / 隐藏 / 移出。
  */
 private fun songRowActions(
     onPlayNow: () -> Unit,
@@ -308,10 +291,6 @@ private fun songRowActions(
     onMoveUp: (() -> Unit)?,
     onMoveDown: (() -> Unit)?,
     onRemoveFromPlaylist: (() -> Unit)?,
-    onFetchCover: (() -> Unit)?,
-    onReparseEmbedded: (() -> Unit)?,
-    onEmbedTags: (() -> Unit)?,
-    onManageLyricCopies: (() -> Unit)?,
     onEditSong: (() -> Unit)?,
     onArchive: (() -> Unit)?,
     onUnarchive: (() -> Unit)?,
@@ -354,54 +333,6 @@ private fun songRowActions(
             )
         }
     }.startSection("歌单顺序")
-
-    // 这三件事是一条线上的：先挑图，再决定要不要写进文件，
-    // 以及文件里那份是不是已经过期了。隔开了就要在两处之间来回找。
-    val coverAndTags = buildList {
-        onFetchCover?.let {
-            add(
-                SheetAction(
-                    MelodyIcons.AlbumArt,
-                    "选择专辑封面",
-                    subtitle = "联网匹配一张，或从相册里挑",
-                    onClick = it
-                )
-            )
-        }
-        onReparseEmbedded?.let {
-            add(
-                SheetAction(
-                    MelodyIcons.Refresh,
-                    "重新解析内嵌封面",
-                    subtitle = "重读文件里的封面（在别的播放器换过图时用）",
-                    onClick = it
-                )
-            )
-        }
-        onEmbedTags?.let {
-            add(
-                SheetAction(
-                    MelodyIcons.Save,
-                    "写入文件标签…",
-                    subtitle = "把歌词和封面写进音频文件，写入后无法撤销",
-                    onClick = it
-                )
-            )
-        }
-    }.startSection("封面与标签")
-
-    // 单独一组而不是塞进「封面与标签」：用户找它时脑子里想的是"歌词"，
-    // 而上面那组标题里没有这两个字 —— 分组标题就是这一层菜单的目录
-    val lyrics = onManageLyricCopies?.let {
-        listOf(
-            SheetAction(
-                MelodyIcons.Lyrics,
-                "歌词副本…",
-                subtitle = "看看 App 里为这首存了哪几份歌词，可预览、可删",
-                onClick = it
-            )
-        ).startSection("歌词")
-    } ?: emptyList()
 
     val info = onEditSong?.let {
         listOf(
@@ -460,7 +391,7 @@ private fun songRowActions(
         }
     }.startSection("曲库管理")
 
-    return play + playlist + playlistOrder + coverAndTags + lyrics + info + libraryOps
+    return play + playlist + playlistOrder + info + libraryOps
 }
 
 /** 把组标题打在**这一组的第一项**上；空组原样返回（不然会凭空多出一个组标题）。 */

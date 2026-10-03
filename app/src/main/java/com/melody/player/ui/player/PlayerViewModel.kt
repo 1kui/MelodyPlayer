@@ -1511,21 +1511,9 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         }
     }
 
-    /**
-     * 顶栏「把标签写进音频文件」被点了。
-     *
-     * 作用对象定为「当前视图看得见的这些」：正搜着歌时点这个，
-     * 心里预期的是处理眼前这几十首，而不是把整库几百首都改一遍（而那不可撤销）。
-     */
-    fun requestEmbedVisible() {
-        requestEmbed(currentlyVisible().map { it.key })
-    }
-
-    /** 顶栏「重新解析内嵌封面」的作用对象：当前视图看得见的这些。 */
-    fun reparseVisibleEmbedded() {
-        val keys = currentlyVisible().mapTo(LinkedHashSet()) { it.key }
-        reparseEmbeddedArtwork(keys)
-    }
+    // 曲库顶栏那个「对当前可见列表写标签 / 重解析封面」的入口在 v2.21 撤掉了：
+    // 这两件事改的是"歌本身"，归到播放页的 ⋮（单曲）与多选批量条（一批），
+    // 曲库顶栏只留跟列表有关的（扫描、导入、新建歌单、浏览方式）。
 
     // ------------------------------------------------------ 曲库只扫描指定文件夹
 

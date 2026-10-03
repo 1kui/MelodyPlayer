@@ -206,6 +206,7 @@ fun PlayerScreen(
                                 onlineSearching = state.onlineSearching,
                                 playbackSpeed = state.playbackSpeed,
                                 sleepSet = state.sleepDeadlineMs != null,
+                                lyricOffsetMs = state.lyricOffsetMs,
                                 onFetchCover = onFetchCover,
                                 onReparseCover = onReparseCover,
                                 onEmbedTags = onEmbedTags,
@@ -216,6 +217,8 @@ fun PlayerScreen(
                                 onReloadLyrics = onReloadLyrics,
                                 onClearImportedLyrics = onClearImportedLyrics,
                                 onManageLyricCopies = onManageLyricCopies,
+                                onNudgeLyricOffset = onNudgeLyricOffset,
+                                onResetLyricOffset = onResetLyricOffset,
                                 onOpenSpeed = onOpenSpeed,
                                 onOpenSleepTimer = onOpenSleepTimer
                             ),
@@ -279,8 +282,6 @@ fun PlayerScreen(
                         positionMs = positionMs,
                         textSize = state.lyricTextSize,
                         onSeek = onSeek,
-                        onNudgeOffset = onNudgeLyricOffset,
-                        onResetOffset = onResetLyricOffset,
                         onImportLyrics = onImportLyrics,
                         onFetchOnlineLyrics = onFetchOnlineLyrics
                     )
@@ -388,6 +389,8 @@ private fun playerActions(
     onlineSearching: Boolean,
     playbackSpeed: Float,
     sleepSet: Boolean,
+    /** 当前这首歌的歌词偏移（毫秒，正 = 延后）。 */
+    lyricOffsetMs: Long,
     onFetchCover: () -> Unit,
     onReparseCover: () -> Unit,
     onEmbedTags: () -> Unit,
@@ -398,6 +401,8 @@ private fun playerActions(
     onReloadLyrics: () -> Unit,
     onClearImportedLyrics: () -> Unit,
     onManageLyricCopies: () -> Unit,
+    onNudgeLyricOffset: (Int) -> Unit,
+    onResetLyricOffset: () -> Unit,
     onOpenSpeed: () -> Unit,
     onOpenSleepTimer: () -> Unit
 ): List<SheetAction> {
@@ -507,7 +512,42 @@ private fun playerActions(
         }
     }.startSection("歌词")
 
-    return playback + cover + songInfo + lyrics
+    // 「歌词偏移」单独一组、排在「歌词」之后：它挪的是"手上这份歌词对到哪儿"，
+    // 与上面那些"换一份歌词"是两件事，混进一组会让人以为它也要联网。
+    //
+    // 当前值写在第一项的副标题上：偏移是看不见的状态（不像播放速度有角标），
+    // 不写出来，用户只能靠"歌词到底对没对上"去猜自己按了几挡。
+    // 上下限那两挡直接置灰 —— 按下去什么都不发生，会像卡了。
+    val lyricOffset = listOf(
+        SheetAction(
+            MelodyIcons.Minus,
+            "歌词提前 0.5 秒",
+            subtitle = "当前：${LyricOffset.label(lyricOffsetMs)}",
+            enabled = lyricOffsetMs > -LyricOffset.MAX_MS,
+            // 这三项点完**不关**弹层：偏移是"听着不对、连按几下"的东西，
+            // 关掉就变成改一挡开一次菜单，而副标题上的当前值正是要边按边看的
+            keepOpen = true,
+            onClick = { onNudgeLyricOffset(-1) }
+        ),
+        SheetAction(
+            MelodyIcons.Plus,
+            "歌词延后 0.5 秒",
+            subtitle = "歌词与声音差半秒时按几下就对上，最长 ±30 秒",
+            enabled = lyricOffsetMs < LyricOffset.MAX_MS,
+            keepOpen = true,
+            onClick = { onNudgeLyricOffset(1) }
+        ),
+        SheetAction(
+            MelodyIcons.Refresh,
+            "恢复未校正",
+            subtitle = "清回文件里的原始时间轴（只影响这里的显示，不改文件）",
+            enabled = lyricOffsetMs != 0L,
+            keepOpen = true,
+            onClick = onResetLyricOffset
+        )
+    ).startSection("歌词偏移")
+
+    return playback + cover + songInfo + lyrics + lyricOffset
 }
 
 /** 把组标题打在这一组的第一项上。 */
@@ -599,8 +639,6 @@ private fun LyricsPage(
     positionMs: Long,
     textSize: LyricTextSize,
     onSeek: (Long) -> Unit,
-    onNudgeOffset: (Int) -> Unit,
-    onResetOffset: () -> Unit,
     onImportLyrics: () -> Unit,
     onFetchOnlineLyrics: () -> Unit
 ) {
@@ -626,40 +664,23 @@ private fun LyricsPage(
         }
     }
 
-    // 小条只在**真的能调**的时候出现（有歌词、且没在忙）：对着一屏"这首歌没有歌词"
-    // 还能挪偏移，只会让人以为挪了会重新匹配一份歌词。
-    // 它固定在内容区最上面、不做成列表的第一项 —— 做成列表项会被滚走，
-    // 而"歌词不对齐"这件事是边听边调，调完还想再调一下。
-    val showOffsetBar = lyrics.isUsable && !state.lyricsLoading && !state.onlineSearching
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        if (showOffsetBar) {
-            LyricOffsetBar(
-                offsetMs = state.lyricOffsetMs,
-                onNudge = onNudgeOffset,
-                onReset = onResetOffset
-            )
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            LyricsBody(
-                state = state,
-                lyrics = lyrics,
-                currentIndex = currentIndex,
-                listState = listState,
-                fontSp = fontSp,
-                lineSp = lineSp,
-                rowPad = rowPad,
-                offsetMs = state.lyricOffsetMs,
-                onSeek = onSeek,
-                onImportLyrics = onImportLyrics,
-                onFetchOnlineLyrics = onFetchOnlineLyrics
-            )
-        }
-    }
+    // 这里原来顶上还有一条 `− 未校正 ＋` 的偏移小条，v2.21 搬进了 ⋮（见 playerActions）。
+    // 整块内容区现在只有歌词本体 —— 歌词页的行高与"当前行停在 1/3 处"的对照关系
+    // 也就不会再被那一行的高度带偏。LyricsBody 的四个分支各自 fillMaxSize，
+    // 不再需要外面套一层撑高度的 Box。
+    LyricsBody(
+        state = state,
+        lyrics = lyrics,
+        currentIndex = currentIndex,
+        listState = listState,
+        fontSp = fontSp,
+        lineSp = lineSp,
+        rowPad = rowPad,
+        offsetMs = state.lyricOffsetMs,
+        onSeek = onSeek,
+        onImportLyrics = onImportLyrics,
+        onFetchOnlineLyrics = onFetchOnlineLyrics
+    )
 }
 
 /** 歌词区的四种形态（解析中 / 联网中 / 没有歌词 / 正常列表）。 */
@@ -768,77 +789,6 @@ private fun LyricsBody(
             }
             item(key = "lyrics-bottom") { Spacer(Modifier.height(140.dp)) }
         }
-    }
-}
-
-/**
- * 歌词时间轴偏移小条：`歌词偏移   −   未校正   ＋`。
- *
- * ## 为什么在这里、而不是 ⋮ 里
- * 偏移是**一边听一边调**的东西：听到"这句早了半秒"，手指伸过去按两下就对了。
- * 塞进 ⋮ 弹层意味着每调一挡都要开一次菜单、关一次菜单，而弹层还盖着歌词区 ——
- * 等于调的过程中看不见自己调的是什么。
- *
- * ## 为什么中间那格可以点
- * 点它清回 0（只在不是 0 的时候可点）。清回原状是这个功能唯一的"取消"，
- * 而它必须比"再按二十下减号"更容易够到 —— 用户试出一个不喜欢的偏移之后
- * 想的是"算了"，不是"一步一步退回去"。
- */
-@Composable
-private fun LyricOffsetBar(
-    offsetMs: Long,
-    onNudge: (Int) -> Unit,
-    onReset: () -> Unit
-) {
-    val changed = offsetMs != 0L
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "歌词偏移",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp)
-        )
-        Spacer(Modifier.weight(1f))
-        IconAction(
-            imageVector = MelodyIcons.Minus,
-            contentDescription = "歌词提前 0.5 秒",
-            onClick = { onNudge(-1) },
-            iconSize = 18.dp,
-            touchSize = 36.dp,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            // 顶在 ±30 秒上就别再让它可点：按下去什么都不发生，会像卡了
-            enabled = offsetMs > -LyricOffset.MAX_MS
-        )
-        Text(
-            text = LyricOffset.label(offsetMs),
-            style = MaterialTheme.typography.labelLarge,
-            // 改过就用主色：不改的时候它该像不存在，改过就必须一眼看出"不是原状了"
-            color = if (changed) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            modifier = Modifier
-                .width(84.dp)
-                .clickable(enabled = changed, onClick = onReset)
-                .padding(vertical = 4.dp),
-            textAlign = TextAlign.Center,
-            maxLines = 1
-        )
-        IconAction(
-            imageVector = MelodyIcons.Plus,
-            contentDescription = "歌词延后 0.5 秒",
-            onClick = { onNudge(1) },
-            iconSize = 18.dp,
-            touchSize = 36.dp,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            enabled = offsetMs < LyricOffset.MAX_MS
-        )
     }
 }
 

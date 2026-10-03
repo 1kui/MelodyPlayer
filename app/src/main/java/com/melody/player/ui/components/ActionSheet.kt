@@ -43,6 +43,11 @@ import com.melody.player.ui.icons.MelodyIcons
  * [section] 连续相同的值会被归到同一组，组标题只画一次。分组是这个菜单从
  * "一长串看不懂的列表"变成"能扫一眼的东西"的关键 —— 十二个平铺的菜单项，
  * 找一个操作得逐个读过去。
+ *
+ * [keepOpen] 是给**要连按好几下**的步进动作（歌词偏移的 ±0.5 秒）用的：
+ * 默认点完就关，是因为有些动作（隐藏、移出列表）会让这一行当场消失，
+ * 弹层必须跟着走；而步进动作什么都不销毁，关掉反而变成"改一挡、开一次菜单、
+ * 再改一挡" —— 而副标题上写着的当前值也就在眼前，本来就是要边看边按的。
  */
 data class SheetAction(
     val icon: ImageVector,
@@ -51,6 +56,8 @@ data class SheetAction(
     val danger: Boolean = false,
     val enabled: Boolean = true,
     val section: String? = null,
+    /** 点完**不关**弹层（只有不销毁任何东西的步进动作才该用它，见类注释）。 */
+    val keepOpen: Boolean = false,
     /** 放在最后一位，这样调用处可以写成 `SheetAction(icon, "标题") { 动作 }`。 */
     val onClick: () -> Unit
 )
@@ -144,8 +151,12 @@ fun MelodyActionSheet(
                     onClick = {
                         // 先清标志（弹窗当场消失），再跑动作：
                         // 反过来的话，让这一行消失的动作会把弹窗连同协程一起拆掉
-                        onDismiss()
-                        action.onClick()
+                        if (action.keepOpen) {
+                            action.onClick()
+                        } else {
+                            onDismiss()
+                            action.onClick()
+                        }
                     }
                 )
             }

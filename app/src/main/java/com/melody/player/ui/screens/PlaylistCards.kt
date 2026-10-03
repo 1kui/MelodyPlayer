@@ -42,7 +42,7 @@ import com.melody.player.ui.icons.MelodyIcons
  * 现在只剩这一条卡：**首张固定是「全部歌曲」，它就是原来的「全部」**——
  * 也就是"默认歌单"这个位置；后面是用户自建的歌单，末尾一张「新建歌单」。
  * 维度切换搬进了顶栏的 ⋮（见 [LibraryTopBar]，进去之后有明确的返回按钮），
- * 播放历史搬到了播放队列页（见 `HistorySheet`）。
+ * 「最近常听」搬到了播放队列页（见 `HistorySheet`）。
  *
  * ## 为什么用卡片而不是胶囊
  * 歌单有封面（就是里面第一首的封面），胶囊放不下这张图 —— 而"我认得这张封面"
@@ -198,8 +198,13 @@ private fun NewPlaylistCard(onClick: () -> Unit) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        // 副标题留成空串，但要占住这一行 —— 三种卡的高度与文字基线必须一致
+        // （见 CardFrame 的说明），少一行会让这一张比旁边矮一截。
+        // 这里原来写的是「挑几首收进来」：六个字在 88dp 的卡宽下，系统字号一调大
+        // 就被截成「挑几首收…」，一排里只有它在冒省略号，看着像是排版坏了。
+        // 那半句话也不是必须的 ——「新建歌单」四个字加一个加号已经把这件事说完了。
         Text(
-            text = "挑几首收进来",
+            text = "",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

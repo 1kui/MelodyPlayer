@@ -361,8 +361,6 @@ fun MelodyRoot(
                             onPlayWholePlaylist = {
                                 state.activePlaylistId?.let { vm.playPlaylist(it, 0) }
                             },
-                            onEmbedAll = vm::requestEmbedVisible,
-                            onReparseAllEmbedded = vm::reparseVisibleEmbedded,
                             // 浏览方式（歌曲 / 专辑 / 歌手）从曲库首屏那一行分段控件
                             // 搬进了顶栏的 ⋮ 菜单；清多选那条规则由 setBrowseMode 自己保证
                             browseMode = state.browseMode,
@@ -448,7 +446,6 @@ fun MelodyRoot(
                             onRefresh = vm::refresh,
                             onImportAudio = { audioImportLauncher.launch(arrayOf("audio/*")) },
                             onRestoreHidden = vm::clearHiddenSongs,
-                            onFetchCover = vm::beginCoverPick,
                             onEditSong = vm::beginEditSong,
                             onSelectPlaylist = vm::selectPlaylist,
                             onCreatePlaylist = { pendingPlaylistName = "" to "新建歌单" },
@@ -584,11 +581,10 @@ fun MelodyRoot(
                 )
             }
 
-            // 播放历史。挂在根界面：入口在播放队列顶栏，而它是一层盖住整屏的弹层，
+            // 最近常听。挂在根界面：入口在播放队列顶栏，而它是一层盖住整屏的弹层，
             // 长在列表里会被队列页那个长按拖动的手势区域接管（见 HistorySheet 的说明）
             if (historyOpen) {
                 HistorySheet(
-                    recent = state.recentPlayedSongs,
                     most = state.mostPlayedSongs,
                     onPlay = { songs, index ->
                         historyOpen = false
