@@ -63,6 +63,7 @@ import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -305,9 +306,7 @@ fun QueueContent(
     LaunchedEffect(dragging, autoScrollDir) {
         if (!dragging || autoScrollDir == 0) return@LaunchedEffect
         var lastNanos = withFrameNanos { it }
-        // 攒够 1px 再去滚一次：不足 1px 的请求会被 Scrollable 直接舍掉，
-        // 而高刷屏上最慢一档一帧只够滚不到 1px（140px/s ÷ 240Hz ≈ 0.6px），
-        // 不攒的话"手指在热区里慢慢挪"会变成完全不动。攒着攒着也是平滑的一部分。
+        // 每帧只往待滚余量上加，攒够 1px 才真去滚一次（见 [queueScrollReady]）
         var pendingPx = 0f
         while (true) {
             val nowNanos = withFrameNanos { it }
@@ -321,8 +320,8 @@ fun QueueContent(
                 edgeZone = edgeZonePx
             )
             if (speedPxPerSec == 0f) break
-            pendingPx += speedPxPerSec * dtSeconds.coerceIn(0f, MAX_FRAME_SECONDS)
-            if (pendingPx < 1f) continue
+            pendingPx = queueAccumulateScroll(pendingPx, speedPxPerSec, dtSeconds)
+            if (!queueScrollReady(pendingPx)) continue
             val consumed = listState.scrollBy(pendingPx)
             pendingPx -= consumed
             // 攒满一整像素还是滚不动 → 已经到顶/到底了，停，否则空转一整个循环
@@ -724,6 +723,30 @@ internal fun queueAutoScrollSpeed(
         else -> 0f
     }
 }
+
+/**
+ * 把这一帧该滚的量累加到待滚余量上。
+ *
+ * 帧间隔夹一个上限：掉帧时宁可少滚一点，也别一帧跳出去半屏。
+ */
+internal fun queueAccumulateScroll(
+    pendingPx: Float,
+    speedPxPerSec: Float,
+    dtSeconds: Float
+): Float = pendingPx + speedPxPerSec * dtSeconds.coerceIn(0f, MAX_FRAME_SECONDS)
+
+/**
+ * 待滚余量够不够整整一个像素 —— 不够就先攒着，别去调 `scrollBy`。
+ *
+ * 不足 1px 的请求会被 Scrollable 直接舍掉，而高刷屏上最慢一档一帧只够滚不到 1px
+ * （140px/s ÷ 240Hz ≈ 0.6px），不攒的话"手指在热区里慢慢挪"会变成完全不动。
+ *
+ * ⚠️ **必须比绝对值**。向上滚时余量是**负数**，写成 `pendingPx < 1f` 的话
+ * 向上那侧每一帧都成立、每帧都 `continue`，一次滚动都发不出去 ——
+ * 表现为"向下正常、向上完全不滚"，而函数本身不报任何错。
+ * 这就是这个判断被抽出来的原因：它是符号敏感的，值得单独钉一条断言。
+ */
+internal fun queueScrollReady(pendingPx: Float): Boolean = abs(pendingPx) >= 1f
 
 /** 进热区的深度（0 = 刚进热区，1 = 已到边缘）→ 滚动速度，线性插值。 */
 private fun speedRamp(depth: Float): Float {

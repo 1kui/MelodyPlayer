@@ -1,7 +1,9 @@
 package com.melody.player
 
+import com.melody.player.ui.screens.queueAccumulateScroll
 import com.melody.player.ui.screens.queueAutoScrollDir
 import com.melody.player.ui.screens.queueAutoScrollSpeed
+import com.melody.player.ui.screens.queueScrollReady
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,6 +21,10 @@ import kotlin.math.abs
  *    所以这里两条都断言：正确的输入会滚，错误的输入**不滚**（后者是"如果谁改回去"的哨兵）。
  *  - **滚动不够平滑** —— 原来的实现是"每帧推进固定 22px"，且速度与手指进热区的深度无关；
  *    现在改成"速度 × 真实帧间隔"，速度随深度线性上升，见 [queueAutoScrollSpeed] 的那几条。
+ *  - **自动向上滚动整个失效**（平滑改动引入）—— "攒够一像素再滚"的判断写成了
+ *    `pendingPx < 1f`，向上滚时余量是负数、判断恒成立，于是每帧 `continue`、
+ *    一次滚动都发不出去。见 [queueScrollReady] 那两条 —— 这类**符号敏感**的判断
+ *    必须比绝对值，且值得单独钉断言：错了不崩，只是"这个方向没反应"。
  */
 class QueueAutoScrollTest {
 
@@ -132,5 +138,60 @@ class QueueAutoScrollTest {
         assertTrue(speed(center = 10f, bottom = 200f, zone = 150f) < 0f)
         assertEquals(0f, speed(center = 100f, bottom = 200f, zone = 150f), 0.001f)
         assertTrue(speed(center = 190f, bottom = 200f, zone = 150f) > 0f)
+    }
+
+    // ------------------------------------------------- 攒够一像素再滚（含符号）
+
+    @Test
+    fun `向上滚的余量是负数，也要算攒够`() {
+        // 回归：这里原来是 `pendingPx < 1f`，向上滚时余量恒为负数、判断恒成立，
+        // 于是每帧都 continue、一次 scrollBy 都发不出去 ——
+        // 现象是"向下正常、向上完全不滚"，且不报任何错。
+        assertTrue("负余量必须也算攒够", queueScrollReady(-1.2f))
+        assertTrue(queueScrollReady(1.2f))
+        assertTrue("刚好一像素就算够", queueScrollReady(-1f))
+        assertTrue("零不算够", !queueScrollReady(0f))
+        assertTrue("不足一像素的负余量不算够", !queueScrollReady(-0.6f))
+        assertTrue(!queueScrollReady(0.6f))
+    }
+
+    @Test
+    fun `攒够一像素的判据上下对称`() {
+        // 同一个量在上下两侧只差符号，判据必须一模一样，否则又是"一边行一边不行"
+        for (v in listOf(0.1f, 0.6f, 1f, 3.7f)) {
+            assertEquals("±$v 的判据不一致", queueScrollReady(v), queueScrollReady(-v))
+        }
+    }
+
+    @Test
+    fun `一帧不足一像素时攒到下一帧再滚`() {
+        // 240Hz 上最慢一档一帧只够 140/240 ≈ 0.58px。第一帧不该滚（会被 Scrollable 舍掉），
+        // 第二帧累到 1.16px 才滚 —— 不攒的话"手指在热区里慢慢挪"就是完全不动
+        val frame = 1f / 240f
+        val first = queueAccumulateScroll(0f, speedPxPerSec = -140f, dtSeconds = frame)
+        assertTrue("第一帧不该到一像素：$first", !queueScrollReady(first))
+        val second = queueAccumulateScroll(first, speedPxPerSec = -140f, dtSeconds = frame)
+        assertTrue("第二帧就该滚了：$second", queueScrollReady(second))
+        // 向下侧同样
+        assertEquals(-first, queueAccumulateScroll(0f, 140f, frame), 0.0001f)
+    }
+
+    @Test
+    fun `单帧累加量有上限，掉帧时不会一帧跳过小半屏`() {
+        // 卡了 1 秒再回来，按真实间隔算会一口气滚 1500px。这里必须夹上限
+        val huge = queueAccumulateScroll(0f, speedPxPerSec = 1500f, dtSeconds = 1f)
+        val capped = queueAccumulateScroll(0f, speedPxPerSec = 1500f, dtSeconds = 0.05f)
+        assertEquals(capped, huge, 0.001f)
+        assertTrue("夹过之后仍是一个正常的一帧量：$huge", huge < 100f)
+    }
+
+    @Test
+    fun `余量扣掉已滚部分后仍能继续攒`() {
+        // scrollBy 只吃掉了请求的一部分（快到顶时）时，差的那点要留到下一帧，
+        // 否则每次都被抹平，越接近边缘滚得越慢
+        val pending = 3f
+        val consumed = 2.4f
+        assertEquals(0.6f, pending - consumed, 0.0001f)
+        assertTrue(!queueScrollReady(pending - consumed))
     }
 }

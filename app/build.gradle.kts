@@ -43,8 +43,8 @@ android {
         applicationId = "com.melody.player"
         minSdk = 26
         targetSdk = 36
-        versionCode = 39
-        versionName = "2.16"
+        versionCode = 40
+        versionName = "2.17"
         resourceConfigurations += listOf("zh", "en")
 
         // 工程自己已经没有原生代码了（LAME / libmelody_mp3.so 随「转 MP3」一并移除），
