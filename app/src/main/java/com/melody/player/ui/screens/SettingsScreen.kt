@@ -70,10 +70,11 @@ import com.melody.player.core.kwm.KwmFile
 import com.melody.player.core.kwm.KwmFiles
 import com.melody.player.core.online.CoverRegion
 import com.melody.player.core.online.ITunesApi
-import com.melody.player.core.online.regionPingSummary
 import com.melody.player.core.online.LyricProvider
+import com.melody.player.core.online.RegionPing
 import com.melody.player.ui.AboutInfo
 import com.melody.player.ui.components.IconAction
+import com.melody.player.ui.components.MelodyInfoSheet
 import com.melody.player.ui.components.SectionCard
 import com.melody.player.ui.components.SettingRow
 import com.melody.player.ui.icons.MelodyIcons
@@ -230,6 +231,15 @@ fun SettingsContent(
     var pendingUnarchive by remember { mutableStateOf<ArchivedEntry?>(null) }
     var confirmClearLyrics by remember { mutableStateOf(false) }
     val aboutActions = rememberAboutActions()
+
+    /**
+     * 当前打开的那条说明。
+     *
+     * 状态提在这一层而不是每条说明自己拿着：弹层是**独立的一层**，它盖住整页时
+     * 页面里那些行仍可能被 LazyColumn 回收 —— 状态挂在行上，行一没弹层就跟着消失。
+     * 放在这一层，谁来谁走都不影响。同一时刻只会有一条（弹层是模态的）。
+     */
+    var helpTopic by remember { mutableStateOf<HelpTopic?>(null) }
 
     // 折叠状态：默认都收起，点标题行才展开。整页本来就长，列表默认铺开很难受
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -509,14 +519,16 @@ fun SettingsContent(
                     )
                 }
                 FoldableHelp(
-                    label = "限定文件夹是怎么扫的",
-                    text = "开启后不再读取整机媒体库，只用系统文件选择器授权的那一个文件夹（连子目录一起），" +
-                        "所以不需要「音乐和音频」权限，只有这一个目录的读取权。\n" +
-                        "逐个文件读取标签会比整机扫描慢一些（大曲库可能要走十几秒），" +
-                        "扫描过程中曲库页会显示已经找到多少首。\n" +
-                        "手动导入的文件和归档到 App 音乐库的副本不受这个开关影响，它们始终在曲库里。" +
-                        "文件夹授权可以被系统在设置里撤销，真被撤销时这里会提示并自动退回整机扫描。"
-                )
+                    HelpTopic(
+                        label = "限定文件夹是怎么扫的",
+                        text = "开启后不再读取整机媒体库，只用系统文件选择器授权的那一个文件夹（连子目录一起），" +
+                            "所以不需要「音乐和音频」权限，只有这一个目录的读取权。\n" +
+                            "逐个文件读取标签会比整机扫描慢一些（大曲库可能要走十几秒），" +
+                            "扫描过程中曲库页会显示已经找到多少首。\n" +
+                            "手动导入的文件和归档到 App 音乐库的副本不受这个开关影响，它们始终在曲库里。" +
+                            "文件夹授权可以被系统在设置里撤销，真被撤销时这里会提示并自动退回整机扫描。"
+                    )
+                ) { helpTopic = it }
             }
         }
 
@@ -622,14 +634,16 @@ fun SettingsContent(
                 }
 
                 FoldableHelp(
-                    label = "归档是怎么回事、原文件会被删吗",
-                    text = "「一键归档全部」会把曲库里的歌复制到 App 专属目录" +
-                        "（Android/data/com.melody.player/files/library），归档时顺手把歌词写进文件的" +
-                        "内嵌标签 —— 歌词与歌曲从此就是同一个文件，重装、换手机、拷到别处都不会丢。\n" +
-                        "原文件不会被删除，也不会被隐藏：同一首歌只保留一行 —— 有 App 库副本时显示副本，" +
-                        "副本哪天不在了（被清理工具删掉或自己删了），原文件那一行会自动回到列表。" +
-                        "真的不想看到某首歌，请在该行点 ⋮ →「隐藏这首」。"
-                )
+                    HelpTopic(
+                        label = "归档是怎么回事、原文件会被删吗",
+                        text = "「一键归档全部」会把曲库里的歌复制到 App 专属目录" +
+                            "（Android/data/com.melody.player/files/library），归档时顺手把歌词写进文件的" +
+                            "内嵌标签 —— 歌词与歌曲从此就是同一个文件，重装、换手机、拷到别处都不会丢。\n" +
+                            "原文件不会被删除，也不会被隐藏：同一首歌只保留一行 —— 有 App 库副本时显示副本，" +
+                            "副本哪天不在了（被清理工具删掉或自己删了），原文件那一行会自动回到列表。" +
+                            "真的不想看到某首歌，请在该行点 ⋮ →「隐藏这首」。"
+                    )
+                ) { helpTopic = it }
             }
         }
 
@@ -909,18 +923,20 @@ fun SettingsContent(
                     )
                 }
                 FoldableHelp(
-                    label = "歌词从哪来、联网匹配的规则",
-                    text = "歌词读取顺序：用户选定的那份（App 内导入的 .lrc 或联网获取的版本）→ " +
-                        "文件内嵌歌词（ID3v2 的 USLT/SYLT、FLAC 与 Ogg 的 LYRICS 注释、MP4 的 ©lyr 原子）→ " +
-                        "音频同目录同名 .lrc → 自动联网匹配的缓存。\n" +
-                        "用播放页右上角 ⋮ →「联网获取歌词」可以联网搜候选，两个来源一起搜、列表里标明各自出处：" +
-                        "LRCLIB 按歌名 + 歌手 + 时长锁定同一个录音版本，库里多数记录带时间轴；" +
-                        "网易云按关键词搜索，有官方翻译时会自动合成中英对照的双语歌词。" +
-                        "候选列表里自己挑一条，被选中的那份会连来源一起记下来。" +
-                        "选定的结果和导入的 .lrc 一样会存进 App 私有目录，退出重进、原文件被删都不会丢；" +
-                        "归档到 App 库时还可以把歌词直接写进音频文件（MP3 写 USLT 帧，FLAC 写 Vorbis Comment），" +
-                        "歌词与歌曲从此合并成一个文件。内嵌歌词若没有时间戳，会按总时长自动均匀对齐并如实标注。"
-                )
+                    HelpTopic(
+                        label = "歌词从哪来、联网匹配的规则",
+                        text = "歌词读取顺序：用户选定的那份（App 内导入的 .lrc 或联网获取的版本）→ " +
+                            "文件内嵌歌词（ID3v2 的 USLT/SYLT、FLAC 与 Ogg 的 LYRICS 注释、MP4 的 ©lyr 原子）→ " +
+                            "音频同目录同名 .lrc → 自动联网匹配的缓存。\n" +
+                            "用播放页右上角 ⋮ →「联网获取歌词」可以联网搜候选，两个来源一起搜、列表里标明各自出处：" +
+                            "LRCLIB 按歌名 + 歌手 + 时长锁定同一个录音版本，库里多数记录带时间轴；" +
+                            "网易云按关键词搜索，有官方翻译时会自动合成中英对照的双语歌词。" +
+                            "候选列表里自己挑一条，被选中的那份会连来源一起记下来。" +
+                            "选定的结果和导入的 .lrc 一样会存进 App 私有目录，退出重进、原文件被删都不会丢；" +
+                            "归档到 App 库时还可以把歌词直接写进音频文件（MP3 写 USLT 帧，FLAC 写 Vorbis Comment），" +
+                            "歌词与歌曲从此合并成一个文件。内嵌歌词若没有时间戳，会按总时长自动均匀对齐并如实标注。"
+                    )
+                ) { helpTopic = it }
             }
         }
 
@@ -1051,7 +1067,10 @@ fun SettingsContent(
                         options = CoverRegion.entries.toList(),
                         selected = state.coverRegions.toSet(),
                         labelOf = { it.label },
-                        onToggle = onToggleCoverRegion
+                        onToggle = onToggleCoverRegion,
+                        // 延迟直接标在**每个地区自己身上**：哪一行对应哪个数字不用来回找，
+                        // 也省掉了原来那条与选项隔了半屏的摘要行
+                        badgeOf = { regionPingBadge(state.coverRegionPings[it.code]) }
                     )
                     NoteText(
                         "最多同时选 ${CoverRegion.MAX_SELECTED} 个：每多一个地区就多一次接口调用，" +
@@ -1062,7 +1081,7 @@ fun SettingsContent(
                         icon = MelodyIcons.Clock,
                         title = "连接延迟",
                         subtitle = if (state.coverRegionPinging) {
-                            "正在依次测量各地…（每测一个刷新一次）"
+                            "正在依次测量各地…（每测一个刷新一次，结果标在各地区上）"
                         } else {
                             "实测一次搜索请求的往返耗时；「无法连接」表示这个地区现在取不到数据"
                         },
@@ -1075,14 +1094,9 @@ fun SettingsContent(
                             }
                         }
                     )
-                    Text(
-                        text = regionPingSummary(state.coverRegionPings),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = CardPad, vertical = 4.dp)
-                    )
                     NoteText(
-                        "延迟只是「哪个区排在前面」的参考：它高不代表搜不到，只是每次搜索要多等一会儿。" +
+                        "每个地区后面标的就是它的实测延迟（没标上的是还没测到）。" +
+                            "延迟只是「哪个区排在前面」的参考：它高不代表搜不到，只是每次搜索要多等一会儿。" +
                             "先按延迟从低到高勾，再用实际搜索验一验。"
                     )
                 }
@@ -1118,19 +1132,21 @@ fun SettingsContent(
                     }
                 )
                 FoldableHelp(
-                    label = "封面从哪来、怎么匹配",
-                    text = "来源是 Apple 的 iTunes Search API（公开接口，不需要密钥）：只用" +
-                        "「歌名 + 歌手」做关键词，不上传本地文件。中国大陆区没有音乐目录，" +
-                        "因此默认按中国台湾 → 中国香港 → 美国依次搜，也可以在「自定义获取地区」里改。\n" +
-                        "自动匹配按分数挑最像的一条（满分 170）：歌名完全一致 100 分、只是包含 55 分、" +
-                        "字面重合度低 20 分，对不上倒扣 60；歌手对得上加 40、对不上扣 20；" +
-                        "时长差 3 秒内加 30、10 秒内加 15、超过 25 秒扣 40；候选带 Live／伴奏／翻唱／" +
-                        "混音这类版本词、而你的标题里没有，再扣 8–70 分。总分不到「匹配评分下限」" +
-                        "（默认 90 分）就不给封面 —— 贴错封面比暂时没有更麻烦。\n" +
-                        "「为曲库补齐封面」不走打分：直接取搜索结果的第一条（接口本身按相关性排序），" +
-                        "几百首时才用；不满意的可以单曲自选覆盖。它同样受「自定义获取地区」影响；" +
-                        "取一张封面要过三步（搜索候选 → 下载封面 → 写入缓存），进度里会写出当前在哪一步。"
-                )
+                    HelpTopic(
+                        label = "封面从哪来、怎么匹配",
+                        text = "来源是 Apple 的 iTunes Search API（公开接口，不需要密钥）：只用" +
+                            "「歌名 + 歌手」做关键词，不上传本地文件。中国大陆区没有音乐目录，" +
+                            "因此默认按中国台湾 → 中国香港 → 美国依次搜，也可以在「自定义获取地区」里改。\n" +
+                            "自动匹配按分数挑最像的一条（满分 170）：歌名完全一致 100 分、只是包含 55 分、" +
+                            "字面重合度低 20 分，对不上倒扣 60；歌手对得上加 40、对不上扣 20；" +
+                            "时长差 3 秒内加 30、10 秒内加 15、超过 25 秒扣 40；候选带 Live／伴奏／翻唱／" +
+                            "混音这类版本词、而你的标题里没有，再扣 8–70 分。总分不到「匹配评分下限」" +
+                            "（默认 90 分）就不给封面 —— 贴错封面比暂时没有更麻烦。\n" +
+                            "「为曲库补齐封面」不走打分：直接取搜索结果的第一条（接口本身按相关性排序），" +
+                            "几百首时才用；不满意的可以单曲自选覆盖。它同样受「自定义获取地区」影响；" +
+                            "取一张封面要过三步（搜索候选 → 下载封面 → 写入缓存），进度里会写出当前在哪一步。"
+                    )
+                ) { helpTopic = it }
             }
         }
 
@@ -1321,16 +1337,18 @@ fun SettingsContent(
 
                 // 只留「原理 + 怎么找文件」两件真正影响使用的事，一次读完
                 FoldableHelp(
-                    label = "解密原理、怎么找文件",
-                    text = ".kwm 是一种加密音频容器：文件头 1KB 是明文说明，之后的音频整段用" +
-                        "「固定口令 ⊕ 文件密钥」异或加密。解密就是把这段异或回来 —— " +
-                        "无损、可逆，不联网、不上传，全程在本机完成。\n" +
-                        "三条路找文件：「扫描设备」查系统媒体库最省事，但 .kwm 不是系统认识的" +
-                        "媒体类型，Android 11 之后多半扫不到；「指定文件夹」授权音乐目录后递归查找，" +
-                        "授权跨重启保留，新系统上最可靠；「选择文件」手动多选，一定可用。\n" +
-                        "解密结果落进 App 专属目录并登记进曲库，接着就能播；原 .kwm 不会被删除，" +
-                        "也不会被改动。"
-                )
+                    HelpTopic(
+                        label = "解密原理、怎么找文件",
+                        text = ".kwm 是一种加密音频容器：文件头 1KB 是明文说明，之后的音频整段用" +
+                            "「固定口令 ⊕ 文件密钥」异或加密。解密就是把这段异或回来 —— " +
+                            "无损、可逆，不联网、不上传，全程在本机完成。\n" +
+                            "三条路找文件：「扫描设备」查系统媒体库最省事，但 .kwm 不是系统认识的" +
+                            "媒体类型，Android 11 之后多半扫不到；「指定文件夹」授权音乐目录后递归查找，" +
+                            "授权跨重启保留，新系统上最可靠；「选择文件」手动多选，一定可用。\n" +
+                            "解密结果落进 App 专属目录并登记进曲库，接着就能播；原 .kwm 不会被删除，" +
+                            "也不会被改动。"
+                    )
+                ) { helpTopic = it }
             }
         }
 
@@ -1418,6 +1436,17 @@ fun SettingsContent(
                 )
             }
         }
+    }
+
+    // 说明弹层：挂在 LazyColumn **外面**（但仍在同一个组合作用域里）。
+    // 放在列表的某一项里也能跑，但那一项一旦被滚出可视区就会被回收，
+    // 挂在它上面的弹层会跟着消失 —— 而弹层是模态的，用户正读着它。
+    helpTopic?.let { topic ->
+        MelodyInfoSheet(
+            title = topic.label,
+            text = topic.text,
+            onDismiss = { helpTopic = null }
+        )
     }
 }
 
@@ -1516,18 +1545,50 @@ private fun <T> ChipFlow(
 }
 
 /**
+ * 胶囊右侧的一条小标注（延迟数字、状态词）。
+ *
+ * [warn] 不是"颜色更好看"的意思，而是一个承诺：标红的都是**用户需要处理**的状态。
+ * 这里只有「无法连接」配得上它 —— 「测速中」会自己变，一闪一红只会让人以为出错了。
+ */
+internal data class ChipBadge(val text: String, val warn: Boolean = false)
+
+/**
+ * 一个地区在选项上要显示的延迟标注；`null` 表示这一项还没测过。
+ *
+ * 四种状态各有各的文案，别合并成一条横线：还没轮到 ≠ 正在测 ≠ 连不上 ——
+ * 合并之后用户分不出"该等一下"和"该换个区"。
+ *
+ * 只有「连不上」带 [ChipBadge.warn]：它是唯一需要用户**做点什么**的状态
+ * （换个区，或者过一会儿重测）；把"测速中"也标成警示色，测速时一闪一闪只会干扰。
+ *
+ * 抽成纯函数放这里（而不是直接写在组合项里）是这一页的老规矩：
+ * 它写错了**不崩**，只是屏幕上少一个数字，靠真机肉眼很难复现，所以必须能进 JVM 单测。
+ */
+internal fun regionPingBadge(ping: RegionPing?): ChipBadge = when (ping) {
+    null -> ChipBadge("未测速")
+    RegionPing.Testing -> ChipBadge("测速中…")
+    is RegionPing.Ok -> ChipBadge("${ping.ms} ms")
+    RegionPing.Unreachable -> ChipBadge("无法连接", warn = true)
+}
+
+/**
  * 多选版的选择胶囊（[ChipFlow] 是单选）。
  *
  * 与单选版的差别只有两点：传的是选中**集合**而不是单个值，以及选中态全靠勾号表达。
  * 「一个都不选」这种边界不在这里拦 —— 它取决于业务含义（地区全不选等于没得搜，
  * 而别的多选项未必），所以由调用方的 [onToggle] 判断并给出提示。
+ *
+ * [badgeOf] 给每项挂一条状态标注（目前只有地区用它显示延迟）。
+ * 标注画在胶囊**里面**而不是旁边：它描述的是"这个选项现在怎么样"，
+ * 分开画就成了两列对不齐的信息，反而要多花一次眼睛去找对应关系。
  */
 @Composable
 private fun <T> MultiChipFlow(
     options: List<T>,
     selected: Set<T>,
     labelOf: (T) -> String,
-    onToggle: (T) -> Unit
+    onToggle: (T) -> Unit,
+    badgeOf: ((T) -> ChipBadge?)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = CardPad, vertical = 4.dp)) {
         options.chunked(2).forEach { rowItems ->
@@ -1539,10 +1600,20 @@ private fun <T> MultiChipFlow(
             ) {
                 rowItems.forEach { option ->
                     val on = option in selected
+                    val badge = badgeOf?.invoke(option)
+                    val badgeSlot: (@Composable () -> Unit)? = if (badge != null) {
+                        { ChipBadgeLabel(badge) }
+                    } else {
+                        null
+                    }
                     FilterChip(
                         selected = on,
                         onClick = { onToggle(option) },
-                        label = { Text(labelOf(option)) },
+                        label = {
+                            // 单行不换行：换行会让同一行的两个胶囊高低不一，
+                            // 而这里的文字都短，省略号是永远用不到的安全网
+                            Text(labelOf(option), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
                         modifier = Modifier.weight(1f),
                         leadingIcon = if (on) {
                             {
@@ -1554,7 +1625,8 @@ private fun <T> MultiChipFlow(
                             }
                         } else {
                             null
-                        }
+                        },
+                        trailingIcon = badgeSlot
                     )
                 }
                 if (rowItems.size == 1) Spacer(Modifier.weight(1f))
@@ -1563,10 +1635,25 @@ private fun <T> MultiChipFlow(
     }
 }
 
+/** 胶囊里的状态标注。比标签小一档，免得把地区名挤掉。 */
+@Composable
+private fun ChipBadgeLabel(badge: ChipBadge) {
+    Text(
+        text = badge.text,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (badge.warn) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        maxLines = 1
+    )
+}
+
 /**
  * 展开 / 收起的统一动画。
  *
- * 设置页里所有「点一下才铺开」的区域 —— 三处折叠列表、每一首歌的副本、四段说明文字 ——
+ * 设置页里所有「点一下才铺开」的区域 —— 三处折叠列表、每一首歌的副本 ——
  * 都从这里取动画，保证点哪一处的手感都一样：
  *
  *  - 展开用竖向弹簧（dampingRatio 0.7），先冲过去一点点再落回。纯 tween 是「匀速推开」，
@@ -1615,7 +1702,8 @@ private fun ExpandableContent(visible: Boolean, content: @Composable () -> Unit)
  * 旋转 180° 与换图标视觉等价，却少维护一个图标。角度的回弹比尺寸更安全：
  * 尺寸回弹过头会在卡片底部顶出一条空白，角度回弹只是箭头多转十几度再落回来。
  *
- * 尺寸由调用方给：说明行用 16dp，折叠列表的标题行用 20dp。
+ * 尺寸由调用方给：折叠列表的标题行用 20dp。
+ * （说明行不再用它 —— 说明改成弹层之后没有"两个状态"可翻，见 [FoldableHelp]。）
  */
 @Composable
 private fun CollapseChevron(expanded: Boolean, size: Dp) {
@@ -1705,46 +1793,59 @@ private fun CollapseRow(
 }
 
 /**
- * 折叠起来的说明文字。
+ * 设置页里一条「读一次就够」的说明。
  *
- * 设置页里有几段「读一次就够」的长文案（归档规则、KWM 解密原理、歌词来源、封面来源），
- * 平时摊在页面上只是噪音。统一收成一行：ℹ 图标 + 一句小标题 + 箭头，点整行展开全文，
- * 再点收起。短句用 [label] 概括，别把长文的第一行截一半当标题。
+ * [label] 是一句概括，要能当标题用；[text] 才是全文。两者放在一起是为了让调用处
+ * 写成 `FoldableHelp(HelpTopic("...", "...")) { helpTopic = it }` ——
+ * 一个对象、一次传递，不会出现"标题改了、弹层里还是旧标题"这种两处不同步。
+ */
+private data class HelpTopic(val label: String, val text: String)
+
+/**
+ * 折叠……不，是**弹出**来的说明文字。
+ *
+ * 设置页里有几段「读一次就够」的长文案（归档规则、KWM 解密原理、歌词来源、封面来源）。
+ * 原来点一下是就地铺开，问题是：说明在卡片里的深度不一，铺开之后它下面的开关、
+ * 按钮**全都被顶下去一格**，用户读完还得重新找刚才那一行；两段同时展开时页面长得没法看。
+ * 现在改为弹一层（[com.melody.player.ui.components.MelodyInfoSheet]）：
+ * 页面纹丝不动，读完划走就回到原处 —— 与曲库行的菜单是同一套交互。
+ *
+ * 箭头朝**右**（向下那个箭头是折叠的语义，会被读成"就在这一页铺开"）。
+ * 图标从旋转的 [CollapseChevron] 换成固定的右箭头：这里没有"展开/收起"两个状态，
+ * 一直在转的箭头只会让人以为下面还藏着东西。
  */
 @Composable
-private fun FoldableHelp(label: String, text: String) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
+private fun FoldableHelp(topic: HelpTopic, onOpen: (HelpTopic) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen(topic) }
+            .padding(horizontal = CardPad, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = MelodyIcons.Info,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = topic.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            imageVector = MelodyIcons.ChevronDown,
+            contentDescription = "查看说明",
+            // ChevronDown 转过 -90° 就是向右的箭头（同一个几何只维护一份）
             modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(horizontal = CardPad, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = MelodyIcons.Info,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = if (expanded) "收起说明" else label,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.weight(1f)
-            )
-            CollapseChevron(expanded = expanded, size = 16.dp)
-        }
-        ExpandableContent(visible = expanded) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = CardPad, vertical = 4.dp)
-            )
-        }
+                .size(16.dp)
+                .rotate(-90f),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

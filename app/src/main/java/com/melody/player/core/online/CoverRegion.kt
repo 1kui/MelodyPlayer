@@ -19,23 +19,6 @@ sealed interface RegionPing {
     data object Unreachable : RegionPing
 }
 
-/** 延迟的展示文案；`null` 表示这一项还没测过。 */
-fun latencyLabel(ping: RegionPing?): String = when (ping) {
-    null -> "未测速"
-    RegionPing.Testing -> "测速中…"
-    is RegionPing.Ok -> "${ping.ms} ms"
-    RegionPing.Unreachable -> "无法连接"
-}
-
-/**
- * 把各地区拼成一行摘要，顺序**固定**为 [CoverRegion.entries]。
- *
- * 顺序不能跟着 Map 的遍历走：那会按"谁先测完"排，同一屏内容的排列每次都不一样，
- * 读数的人得一行一行重新找。地区顺序是稳定的东西，展示顺序也该稳定。
- */
-fun regionPingSummary(pings: Map<String, RegionPing>): String =
-    CoverRegion.entries.joinToString(" · ") { "${it.label} ${latencyLabel(pings[it.code])}" }
-
 /**
  * iTunes 搜索用的地区（接口的 `country` 参数）。
  *

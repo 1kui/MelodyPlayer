@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.melody.player.ui.icons.MelodyIcons
 
 /**
  * 弹窗里的一个动作。
@@ -143,6 +146,75 @@ fun MelodyActionSheet(
                     }
                 )
             }
+        }
+    }
+}
+
+/**
+ * 只讲一件事的说明弹层。
+ *
+ * 与 [MelodyActionSheet] 分开写，是因为两者的内容形态根本不是一种东西：那个是
+ * 「一串并列的动作」（每项一个图标、一句话、一个后果），这个是「一段连续的文字」。
+ * 硬塞进同一个函数，就得往动作列表里塞一个假的"正文项"，而分组、副标题、
+ * danger 色这些概念对一段说明文字全是噪音。
+ *
+ * ## 为什么设置页的说明要从"就地展开"改成它
+ * 就地展开会把整页往下顶 —— 说明在卡片里的位置是不定的，展开后它下面的开关、
+ * 按钮全都跟着挪一格，用户点完还要重新找刚才那一行；几段长文案同时展开时，
+ * 设置页会长得没法看。弹层是**独立的一层**：页面纹丝不动，读完划走就回到原处。
+ * 这和曲库行的菜单（[MelodyActionSheet]）是同一套交互，用户不用再学第二种。
+ *
+ * 长文给高度上限并让它内部滚动：一篇几千字的说明不该把整屏占满，
+ * 那是"弹出来一堵墙"，不是"看一下说明"。
+ */
+@Composable
+fun MelodyInfoSheet(
+    title: String,
+    text: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 22.dp, end = 22.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = MelodyIcons.Info,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 22.dp, vertical = 16.dp)
+            )
+            // 底部这一段留白挂在滚动区**外面**：滚到底时不至于贴着导航栏，
+            // 也不会因为内容短就把这段留白也滚走
+            Spacer(Modifier.navigationBarsPadding().height(16.dp))
         }
     }
 }

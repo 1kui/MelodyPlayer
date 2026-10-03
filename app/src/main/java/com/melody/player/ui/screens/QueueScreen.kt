@@ -1,7 +1,8 @@
 package com.melody.player.ui.screens
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
@@ -37,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -226,6 +228,20 @@ fun QueueContent(
     }
 
     /**
+     * 手指（也就是被拖行的中心）此刻落在 item 偏移坐标系里的哪个纵坐标。
+     *
+     * 夹在可见行的首尾中心之间：否则行会飘到"正在播放"卡片上或列表外面去。
+     * 夹住之后拖到边缘时行会"贴住"边缘，配合自动滚动就能一路把目标推到底。
+     *
+     * 拖动的每一帧都要算一份 —— 手指动、列表滚，这两个输入都会变。
+     */
+    fun draggedCenterNow(): Float {
+        val rows = visibleRows()
+        if (rows.isEmpty()) return 0f
+        return (dragAnchorCenter + dragDeltaY).coerceIn(rows.first().center, rows.last().center)
+    }
+
+    /**
      * 按当前布局重算"落点"，并同步自动滚动方向。
      *
      * 拖动中和自动滚动的每一帧都要调：列表滚过之后，压在手指下面的已经是**别的**行了。
@@ -233,7 +249,7 @@ fun QueueContent(
     fun syncDrag() {
         val rows = visibleRows()
         if (rows.isEmpty()) return
-        val center = (dragAnchorCenter + dragDeltaY).coerceIn(rows.first().center, rows.last().center)
+        val center = draggedCenterNow()
         val target = queueDragTarget(rows, center)
         if (target >= 0 && target != dragTargetIndex) {
             dragTargetIndex = target
@@ -268,31 +284,51 @@ fun QueueContent(
 
     // ---------------- 拖动中的派生量（渲染用） ----------------
 
-    /**
-     * 被拖行当前的纵坐标（item 偏移坐标系），与布局无关。
-     *
-     * 夹在可见行的首尾中心之间：否则行会飘到"正在播放"卡片上或列表外面去。
-     * 夹住之后拖到边缘时行会"贴住"边缘，配合自动滚动就能一路把目标推到底。
-     */
-    val draggedCenter = if (dragging) {
-        val rows = visibleRows()
-        if (rows.isEmpty()) 0f
-        else (dragAnchorCenter + dragDeltaY).coerceIn(rows.first().center, rows.last().center)
-    } else {
-        0f
-    }
+    /** 被拖行当前的纵坐标（item 偏移坐标系），与布局无关。 */
+    val draggedCenter = if (dragging) draggedCenterNow() else 0f
 
-    // 自动滚动：手指停在热区里就**持续**滚，而不是只在手指移动的那几帧滚一下。
-    // 长队列拖到底部时手指通常是不动的，只靠 onDrag 触发的滚动会"滚两下就停"。
+    /**
+     * 自动滚动：手指停在热区里就**持续**滚，而不是只在手指移动的那几帧滚一下。
+     * 长队列拖到底部时手指通常是不动的，只靠 `onDrag` 触发的滚动会"滚两下就停"。
+     *
+     * ## 为什么按「真实帧间隔 × 速度」算，而不是「每帧推进固定像素」
+     * 原来写的是 `delay(16); scrollBy(22f)`，观感是"一顿一顿"，三个原因叠在一起：
+     *  1. 每帧都跳 22px —— 位移是一串台阶而不是一条线；
+     *  2. 速度与手指停在热区**多深**无关：刚进热区就和贴在屏幕边缘一样快，
+     *     于是"要不要滚"这件事在热区边界上是**突然**发生的；
+     *  3. 16ms 只是个目标值，真正两帧隔多久由调度决定，抖动直接变成滚动的抖动。
+     *
+     * 现在滚动量 = 速度 × 真实帧间隔；速度随进热区的深度线性上升（见 [queueAutoScrollSpeed]）：
+     * 刚进热区慢慢挪、越靠边越快。帧间隔夹一个上限，掉帧时宁可少滚一点，
+     * 也别一帧跳出去半屏（那会把列表甩过目标）。
+     */
     LaunchedEffect(dragging, autoScrollDir) {
         if (!dragging || autoScrollDir == 0) return@LaunchedEffect
+        var lastNanos = withFrameNanos { it }
+        // 攒够 1px 再去滚一次：不足 1px 的请求会被 Scrollable 直接舍掉，
+        // 而高刷屏上最慢一档一帧只够滚不到 1px（140px/s ÷ 240Hz ≈ 0.6px），
+        // 不攒的话"手指在热区里慢慢挪"会变成完全不动。攒着攒着也是平滑的一部分。
+        var pendingPx = 0f
         while (true) {
-            val consumed = listState.scrollBy(autoScrollDir * EDGE_SCROLL_PX)
-            // 滚不动了（到顶/到底）就停，否则空转一整个循环
+            val nowNanos = withFrameNanos { it }
+            val dtSeconds = (nowNanos - lastNanos) / 1_000_000_000f
+            lastNanos = nowNanos
+            val info = listState.layoutInfo
+            val speedPxPerSec = queueAutoScrollSpeed(
+                center = draggedCenterNow(),
+                viewportTop = info.viewportStartOffset.toFloat(),
+                viewportBottom = info.viewportStartOffset + viewportHeightPx - bottomOverlayPx,
+                edgeZone = edgeZonePx
+            )
+            if (speedPxPerSec == 0f) break
+            pendingPx += speedPxPerSec * dtSeconds.coerceIn(0f, MAX_FRAME_SECONDS)
+            if (pendingPx < 1f) continue
+            val consumed = listState.scrollBy(pendingPx)
+            pendingPx -= consumed
+            // 攒满一整像素还是滚不动 → 已经到顶/到底了，停，否则空转一整个循环
             if (consumed == 0f) break
             // 列表动过之后手指底下已是别的行，落点跟着重算
             syncDrag()
-            delay(AUTO_SCROLL_FRAME_MS)
         }
     }
 
@@ -459,9 +495,16 @@ fun QueueContent(
                         dragRowHeight
                     else -> 0f
                 }
+                // 让位位移用弹簧而不是 tween：拖动时目标槽位是**连续**变的
+                //（自动滚动时每几十毫秒就换一格），tween 被反复打断、每次都从当前值零速重启，
+                // 看起来一顿一顿；弹簧会把速度带走，中途换目标也是顺着原来的方向滑过去。
+                // NoBouncy：让位位移一旦回弹，行会短暂盖到邻行上，比"慢一点"难看得多。
                 val shift by animateFloatAsState(
                     targetValue = shiftTarget,
-                    animationSpec = tween(durationMillis = 140),
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    ),
                     label = "queueRowShift"
                 )
 
@@ -556,14 +599,27 @@ fun QueueContent(
     }
 }
 
-/** 距列表上下边缘多近开始自动滚动（dp）。 */
-private val EDGE_ZONE_DP = 48.dp
+/**
+ * 距列表上下边缘多近开始自动滚动（dp）。
+ *
+ * 64 而不是更小：这段距离同时是"速度从最慢爬到最快"的行程，太短的话
+ * 手指刚进热区就已经贴着边、速度瞬间拉满，还是会有"突然开始滚"的感觉。
+ */
+private val EDGE_ZONE_DP = 64.dp
 
-/** 自动滚动每次推进多少像素。 */
-private const val EDGE_SCROLL_PX = 22f
+/**
+ * 手指刚进热区时的滚动速度（像素/秒）。
+ *
+ * 刻意不为 0：热区边界上速度必须是**连续**的，若从 0 起步，手指在边界附近抖动就会
+ * 在"滚一点点"和"完全不滚"之间反复横跳。给一个很小的初速，用户一进热区就能看出这个方向是通的。
+ */
+private const val MIN_SCROLL_PX_PER_SEC = 140f
 
-/** 自动滚动的推进间隔（毫秒）。 */
-private const val AUTO_SCROLL_FRAME_MS = 16L
+/** 手指贴到边缘时的滚动速度（像素/秒）。 */
+private const val MAX_SCROLL_PX_PER_SEC = 1500f
+
+/** 单帧最多按多少秒算。掉帧时宁可少滚一点，也别一帧跳过小半屏。 */
+private const val MAX_FRAME_SECONDS = 0.05f
 
 /**
  * 一行在屏幕上的位置（像素）。
@@ -612,6 +668,9 @@ internal fun queueDragTarget(rows: List<RowLayout>, draggedCenter: Float): Int {
 /**
  * 被拖中心落在上下热区里时该往哪边自动滚：-1 向上、0 不动、+1 向下。
  *
+ * 方向直接由 [queueAutoScrollSpeed] 的符号给出 —— 这两件事本来就是一体的，
+ * 各写一份迟早会写出"方向说往上、速度却是正的"这种自相矛盾。
+ *
  * 抽成纯函数是因为它的两个边界都很容易写错，而且错了**不崩**：
  * 用户只会觉得"拖不动"，然后放弃这个功能。具体：
  *
@@ -620,7 +679,7 @@ internal fun queueDragTarget(rows: List<RowLayout>, draggedCenter: Float): Int {
  *     于是热区被推到屏幕之外，要拖到行被底栏盖住才开始滚。
  *  2. **热区不能比可视区还高**。列表很短（或键盘弹出）时，
  *     上下热区会重叠成"两边同时成立"，行就会在两点之间来回抖。
- *     这里把热区压到可视区的三分之一以内，两侧就永远不可能重叠。
+ *     热区压到可视区的三分之一以内，两侧就永远不可能重叠（见 [queueAutoScrollSpeed]）。
  */
 internal fun queueAutoScrollDir(
     center: Float,
@@ -628,12 +687,46 @@ internal fun queueAutoScrollDir(
     viewportBottom: Float,
     edgeZone: Float
 ): Int {
-    val height = viewportBottom - viewportTop
-    if (height <= 0f) return 0
-    val zone = edgeZone.coerceIn(1f, height / 3f)
+    val speed = queueAutoScrollSpeed(center, viewportTop, viewportBottom, edgeZone)
     return when {
-        center < viewportTop + zone -> -1
-        center > viewportBottom - zone -> 1
+        speed < 0f -> -1
+        speed > 0f -> 1
         else -> 0
     }
+}
+
+/**
+ * 自动滚动的速度（像素/秒，负数是向上），0 表示"这个位置不该滚"。
+ *
+ * 返回**速度**而不是"要不要滚 + 固定步长"，是为了让滚动本身平滑：
+ * 速度随手指进热区的深度从 [MIN_SCROLL_PX_PER_SEC] 线性爬到 [MAX_SCROLL_PX_PER_SEC]，
+ * 调用方再乘以真实帧间隔 —— 于是"刚进热区"与"贴着边"是同一套连续变化的量，
+ * 不会在热区边界上突然开始/突然变快。
+ *
+ * 热区被压在可视区的三分之一以内（与 [queueAutoScrollDir] 的说明同一条理由），
+ * 所以上下两侧不可能同时为非零，`when` 里谁先谁后都无所谓。
+ */
+internal fun queueAutoScrollSpeed(
+    center: Float,
+    viewportTop: Float,
+    viewportBottom: Float,
+    edgeZone: Float
+): Float {
+    val height = viewportBottom - viewportTop
+    if (height <= 0f) return 0f
+    val zone = edgeZone.coerceIn(1f, height / 3f)
+    // 两侧各算一个"进热区的深度"（>0 表示在这一侧的热区里），深度越大速度越快
+    val upDepth = ((viewportTop + zone) - center) / zone
+    val downDepth = (center - (viewportBottom - zone)) / zone
+    return when {
+        upDepth > 0f -> -speedRamp(upDepth)
+        downDepth > 0f -> speedRamp(downDepth)
+        else -> 0f
+    }
+}
+
+/** 进热区的深度（0 = 刚进热区，1 = 已到边缘）→ 滚动速度，线性插值。 */
+private fun speedRamp(depth: Float): Float {
+    val d = depth.coerceIn(0f, 1f)
+    return MIN_SCROLL_PX_PER_SEC + (MAX_SCROLL_PX_PER_SEC - MIN_SCROLL_PX_PER_SEC) * d
 }
