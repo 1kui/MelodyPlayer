@@ -17,19 +17,23 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -48,6 +52,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +63,7 @@ import com.melody.player.core.LyricCopyGroups
 import com.melody.player.core.PlaybackSpeed
 import com.melody.player.core.Playlist
 import com.melody.player.core.SleepOption
+import com.melody.player.core.SleepTimer
 import com.melody.player.core.Song
 import com.melody.player.core.SongQuery
 import com.melody.player.data.AudioLibrary
@@ -76,6 +82,7 @@ import com.melody.player.ui.components.SongEditDialog
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
 import com.melody.player.ui.player.PlayerViewModel
+import com.melody.player.ui.screens.HistorySheet
 import com.melody.player.ui.screens.LibraryContent
 import com.melody.player.ui.screens.LibraryTopBar
 import com.melody.player.ui.screens.PlayerScreen
@@ -142,6 +149,10 @@ fun MelodyRoot(
     /** 睡眠定时 / 播放速度的弹层开关。挂根界面：它从播放页 ⋮ 和设置页两处被叫起来。 */
     var sleepSheetOpen by remember { mutableStateOf(false) }
     var speedSheetOpen by remember { mutableStateOf(false) }
+    /** 「睡眠定时 → 自定义…」的分钟数输入框。同理挂在根界面。 */
+    var customSleepHoursOpen by remember { mutableStateOf(false) }
+    /** 播放历史的弹层开关（入口在播放队列顶栏）。 */
+    var historyOpen by remember { mutableStateOf(false) }
     // 歌单的"新建 / 改名"共用一个命名对话框；删歌单要二次确认，所以单独一个待删对象
     var pendingPlaylistName by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingPlaylistDelete by remember { mutableStateOf<Playlist?>(null) }
@@ -351,12 +362,17 @@ fun MelodyRoot(
                                 state.activePlaylistId?.let { vm.playPlaylist(it, 0) }
                             },
                             onEmbedAll = vm::requestEmbedVisible,
-                            onReparseAllEmbedded = vm::reparseVisibleEmbedded
+                            onReparseAllEmbedded = vm::reparseVisibleEmbedded,
+                            // 浏览方式（歌曲 / 专辑 / 歌手）从曲库首屏那一行分段控件
+                            // 搬进了顶栏的 ⋮ 菜单；清多选那条规则由 setBrowseMode 自己保证
+                            browseMode = state.browseMode,
+                            onBrowseModeChange = vm::setBrowseMode
                         )
 
                         MelodyTab.QUEUE -> QueueTopBar(
                             queueSize = state.queue.size,
-                            onClear = { pendingQueueClear = true }
+                            onClear = { pendingQueueClear = true },
+                            onOpenHistory = { historyOpen = true }
                         )
 
                         MelodyTab.SETTINGS -> SettingsTopBar(
@@ -544,11 +560,41 @@ fun MelodyRoot(
                         sleepSheetOpen = false
                         vm.setSleepTimer(option)
                     },
+                    onCustom = {
+                        // 先收起选单再开输入框：两个都是模态层，叠着出现的话
+                        // 用户在输入框里点"取消"，回到的是下面那层选单，会以为没生效
+                        sleepSheetOpen = false
+                        customSleepHoursOpen = true
+                    },
                     onCancelTimer = {
                         sleepSheetOpen = false
                         vm.cancelSleepTimer()
                     },
                     onDismiss = { sleepSheetOpen = false }
+                )
+            }
+
+            if (customSleepHoursOpen) {
+                SleepCustomDialog(
+                    onConfirm = { minutes ->
+                        customSleepHoursOpen = false
+                        vm.setSleepTimerMinutes(minutes)
+                    },
+                    onDismiss = { customSleepHoursOpen = false }
+                )
+            }
+
+            // 播放历史。挂在根界面：入口在播放队列顶栏，而它是一层盖住整屏的弹层，
+            // 长在列表里会被队列页那个长按拖动的手势区域接管（见 HistorySheet 的说明）
+            if (historyOpen) {
+                HistorySheet(
+                    recent = state.recentPlayedSongs,
+                    most = state.mostPlayedSongs,
+                    onPlay = { songs, index ->
+                        historyOpen = false
+                        vm.playAll(songs, index)
+                    },
+                    onDismiss = { historyOpen = false }
                 )
             }
 
@@ -941,8 +987,9 @@ fun MelodyRoot(
 /**
  * 睡眠定时的选择弹层。
  *
- * 五挡就够，不给"自定义分钟数"：这个功能的使用场景是躺着准备睡，
- * 不该让人为了填一个数字去调键盘。**当前是否已设定**只改副标题与尾部那一项 ——
+ * 五挡预设覆盖绝大多数场景（躺下前顺手点一下）；**要填数字的场景也存在** ——
+ * 比如"这集还有 52 分钟"，那是预设里没有的一挡，所以末尾给一条「自定义…」通到
+ * 输入框，而不是逼用户从 45 和 60 里二选一。**当前是否已设定**只改副标题与尾部那一项 ——
  * 已设定时时多一个「取消定时」，否则用户只能靠"重设一个更长的"来抵消，
  * 而列表里没有任何一项叫"不要定时"。
  */
@@ -950,6 +997,7 @@ fun MelodyRoot(
 private fun SleepTimerSheet(
     timerSet: Boolean,
     onPick: (SleepOption) -> Unit,
+    onCustom: () -> Unit,
     onCancelTimer: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -964,6 +1012,16 @@ private fun SleepTimerSheet(
                 )
             )
         }
+        // 自定义排在预设之后、且与它们同属"设一个时长"这一段：
+        // 它是同一件事的另一种作答方式，不该被归进下面「取消」那一段
+        add(
+            SheetAction(
+                icon = MelodyIcons.Edit,
+                title = "自定义时长…",
+                subtitle = "自己填分钟数，1–${SleepTimer.MAX_CUSTOM_MINUTES} 分钟",
+                onClick = onCustom
+            )
+        )
         if (timerSet) {
             add(
                 SheetAction(
@@ -991,6 +1049,70 @@ private fun SleepTimerSheet(
         },
         actions = actions,
         onDismiss = onDismiss
+    )
+}
+
+/**
+ * 「自定义时长」的输入框。
+ *
+ * 只收分钟数、只认数字（非数字在 [SleepTimer.customMinutes] 里就被剥掉了）。
+ * 输入不合法时把「确定」置灰、并在下面写明原因 —— 而不是夹到边界：
+ * 夹取会让用户按下去的那一刻发生一次看不见的修改（详见 `SleepTimer.customMinutes`）。
+ */
+@Composable
+private fun SleepCustomDialog(
+    onConfirm: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var raw by remember { mutableStateOf("") }
+    val minutes = SleepTimer.customMinutes(raw)
+    val invalid = raw.isNotBlank() && minutes == null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义睡眠定时") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = raw,
+                    onValueChange = { input ->
+                        // 顺手把非数字滤掉，省得用户敲出"3分"再看到一句报错
+                        raw = input.filter { it.isDigit() }.take(3)
+                    },
+                    singleLine = true,
+                    isError = invalid,
+                    label = { Text("分钟") },
+                    placeholder = { Text("例如 25") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = when {
+                        raw.isBlank() -> "可填 ${SleepTimer.MIN_CUSTOM_MINUTES}–" +
+                            "${SleepTimer.MAX_CUSTOM_MINUTES} 分钟"
+                        minutes != null -> "到点自动暂停：${SleepTimer.customLabel(minutes)}后"
+                        else -> "请填 ${SleepTimer.MIN_CUSTOM_MINUTES}–" +
+                            "${SleepTimer.MAX_CUSTOM_MINUTES} 之间的分钟数"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (invalid) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { minutes?.let(onConfirm) },
+                enabled = minutes != null
+            ) { Text("开始计时") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
     )
 }
 

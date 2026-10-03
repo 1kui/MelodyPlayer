@@ -70,7 +70,8 @@ import kotlin.math.roundToInt
 fun QueueTopBar(
     queueSize: Int,
     onClear: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenHistory: () -> Unit = {}
 ) {
     CenterAlignedTopAppBar(
         modifier = modifier,
@@ -89,6 +90,15 @@ fun QueueTopBar(
             }
         },
         actions = {
+            // 播放历史（最近播放 / 最常听）从曲库首页搬到了这一栏。
+            // 「播放」本来就是回答"我在听什么、听过什么"的地方，
+            // 而且历史是"想回头再听一遍"的入口 —— 与队列放在同一屏最顺手。
+            IconAction(
+                imageVector = MelodyIcons.History,
+                contentDescription = "播放历史",
+                onClick = onOpenHistory,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             IconAction(
                 imageVector = MelodyIcons.Delete,
                 contentDescription = "清空播放队列",

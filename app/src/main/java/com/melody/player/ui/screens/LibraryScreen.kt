@@ -62,7 +62,6 @@ import com.melody.player.core.SortMode
 import com.melody.player.ui.components.EmptyState
 import com.melody.player.ui.components.IconAction
 import com.melody.player.ui.components.MelodyActionSheet
-import com.melody.player.ui.components.PillSwitcher
 import com.melody.player.ui.components.SheetAction
 import com.melody.player.ui.components.SongRow
 import com.melody.player.ui.icons.MelodyIcons
@@ -95,6 +94,15 @@ fun LibraryTopBar(
     scrollBehavior: TopAppBarScrollBehavior,
     modifier: Modifier = Modifier,
     playlist: Playlist? = null,
+    /**
+     * 当前的浏览维度。
+     *
+     * 它原来由首屏上一排 `歌曲 / 专辑 / 歌手` 的分段控件管着；那一行撤掉之后
+     * 改从这里进（⋮ → 浏览方式），所以顶栏必须知道现在是哪一挡 ——
+     * 否则用户看不出自己按下的那一下有没有生效。
+     */
+    browseMode: LibraryBrowse = LibraryBrowse.SONGS,
+    onBrowseModeChange: (LibraryBrowse) -> Unit = {},
     onCreatePlaylist: () -> Unit = {},
     onRenamePlaylist: (Playlist) -> Unit = {},
     onDeletePlaylist: (Playlist) -> Unit = {},
@@ -276,6 +284,27 @@ fun LibraryTopBar(
                                     onClick = onReparseAllEmbedded
                                 )
                             )
+                            // 浏览方式从首屏那一排分段控件搬到这里。
+                            // 没把它直接删掉是因为专辑 / 歌手是"按对象找歌"的另一条路
+                            // （"我想听那张专辑"而不是"我记得歌名"）—— 首屏不该为它空出一整行，
+                            // 但也不该让它没有入口。
+                            // 歌单视图里不给：歌单的顺序是用户手排的，再按专辑拆一遍就把它打乱了
+                            if (playlist == null) {
+                                LibraryBrowse.entries.forEach { mode ->
+                                    val current = mode == browseMode
+                                    add(
+                                        SheetAction(
+                                            // 当前那一挡换成勾号，与上面「排序」的写法一致：
+                                            // 同一个位置两种含义（去这一挡 / 已经在这一挡）会看错
+                                            icon = if (current) MelodyIcons.Check else modeIcon(mode),
+                                            title = modeEntryTitle(mode),
+                                            subtitle = if (current) "当前" else modeEntryHint(mode),
+                                            section = if (mode == LibraryBrowse.SONGS) "浏览方式" else null,
+                                            onClick = { onBrowseModeChange(mode) }
+                                        )
+                                    )
+                                }
+                            }
                         },
                         onDismiss = { moreMenuOpen = false }
                     )
@@ -287,71 +316,28 @@ fun LibraryTopBar(
 }
 
 /**
- * 歌单切换条：`全部` + 各歌单 + 新建。
+ * 浏览方式在 ⋮ 菜单里长什么样。
  *
- * 横向滚动而不是下拉菜单：歌单是"常回去的地方"，摆在眼前比藏在菜单里好找；
- * 而新建按钮紧挨着放在末尾，省得再去顶栏的菜单里找。
+ * 三条都写成"按…浏览"的**动宾短语**，而不是「歌曲 / 专辑 / 歌手」三个名词 ——
+ * 它们是菜单里的一串动作，不是分段控件上的三格；照抄名词会让人以为点下去只是"选中"
+ * 而不会离开当前列表。
  */
-@Composable
-private fun PlaylistChips(
-    playlists: List<Playlist>,
-    activeId: String?,
-    totalCount: Int,
-    onSelect: (String?) -> Unit,
-    onCreate: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        PlaylistChip(
-            text = "全部 $totalCount",
-            selected = activeId == null,
-            onClick = { onSelect(null) }
-        )
-        playlists.forEach { playlist ->
-            PlaylistChip(
-                text = "${playlist.name} ${playlist.songKeys.size}",
-                selected = playlist.id == activeId,
-                onClick = { onSelect(playlist.id) }
-            )
-        }
-        PlaylistChip(text = "新建", selected = false, onClick = onCreate, accent = true)
-    }
+private fun modeIcon(mode: LibraryBrowse): ImageVector = when (mode) {
+    LibraryBrowse.SONGS -> MelodyIcons.MusicNote
+    LibraryBrowse.ALBUMS -> MelodyIcons.Album
+    LibraryBrowse.ARTISTS -> MelodyIcons.Artist
 }
 
-@Composable
-private fun PlaylistChip(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    accent: Boolean = false
-) {
-    Surface(
-        shape = CircleShape,
-        color = when {
-            selected -> MaterialTheme.colorScheme.primaryContainer
-            accent -> MaterialTheme.colorScheme.surfaceContainerHighest
-            else -> MaterialTheme.colorScheme.surfaceContainer
-        },
-        modifier = Modifier.clickable(onClick = onClick)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            color = when {
-                selected -> MaterialTheme.colorScheme.onPrimaryContainer
-                accent -> MaterialTheme.colorScheme.primary
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-        )
-    }
+private fun modeEntryTitle(mode: LibraryBrowse): String = when (mode) {
+    LibraryBrowse.SONGS -> "按歌曲列表浏览"
+    LibraryBrowse.ALBUMS -> "按专辑浏览"
+    LibraryBrowse.ARTISTS -> "按歌手浏览"
+}
+
+private fun modeEntryHint(mode: LibraryBrowse): String = when (mode) {
+    LibraryBrowse.SONGS -> "平铺列表，可多选、可批量操作"
+    LibraryBrowse.ALBUMS -> "封面网格"
+    LibraryBrowse.ARTISTS -> "一位歌手一张卡"
 }
 
 /** 曲库页主体内容。 */
@@ -471,17 +457,12 @@ fun LibraryContent(
     // ------------------------------------------------------------ 回访与维度
 
     /**
-     * 当前看的是哪个回访榜单。
+     * 歌单卡要显示"里面第一首歌的封面"，所以得把 key 换回曲目。
      *
-     * 本地 `remember` 而不是进 `PlayerUiState`：这是"我现在想翻哪一个"的临时视角，
-     * 关掉 App 再回来该回到「最近播放」—— 记住上次翻到「最常听」只会让人莫名其妙。
+     * `remember` 住这份索引：每次重组现建一个几十上百项的 map，
+     * 而横滑卡片的重组跟着手指走，那一笔开销就白花了。
      */
-    var board by remember { mutableStateOf(HistoryBoard.RECENT) }
-    val boardSongs = if (board == HistoryBoard.RECENT) {
-        state.recentPlayedSongs
-    } else {
-        state.mostPlayedSongs
-    }
+    val songsByKey = remember(state.songs) { state.songs.associateBy { it.key } }
 
     val albumGridState = rememberLazyGridState()
 
@@ -581,41 +562,32 @@ fun LibraryContent(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        PlaylistChips(
-            playlists = state.playlists,
-            activeId = state.activePlaylistId,
-            totalCount = state.songs.size,
-            onSelect = onSelectPlaylist,
-            onCreate = onCreatePlaylist
-        )
-
-        // 维度切换。**歌单视图里不出现**：歌单是"我挑出来的这几首"，
-        // 再按专辑/歌手拆一遍它，用户手排的顺序就没了 —— 而那正是歌单的意义。
-        // 详情页里也不出现：那时屏幕上已经有"返回"，再摆一个分段控件等于两个出口。
-        if (!inPlaylist && !state.browseDetailOpen) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp, bottom = 2.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                PillSwitcher(
-                    options = LibraryBrowse.entries.toList(),
-                    selected = state.browseMode,
-                    labelOf = { it.label },
-                    iconOf = {
-                        when (it) {
-                            LibraryBrowse.SONGS -> MelodyIcons.MusicNote
-                            LibraryBrowse.ALBUMS -> MelodyIcons.Album
-                            LibraryBrowse.ARTISTS -> MelodyIcons.Artist
-                        }
+        // ------------------------------------------------------------ 首屏第一行
+        //
+        // 这一行要么是**歌单卡**（常态），要么是**浏览方式的返回条**（看专辑 / 歌手时）。
+        // 两者互斥、都只有一行 —— 上一版在这里上下叠了三段选择器，
+        // 用户在曲库首屏想问的"歌在哪"被挤到了第二屏。
+        if (!state.browseDetailOpen) {
+            if (state.browseMode == LibraryBrowse.SONGS) {
+                PlaylistCardRow(
+                    playlists = state.playlists,
+                    activeId = state.activePlaylistId,
+                    totalCount = state.songs.size,
+                    coverOf = { playlist ->
+                        playlist.songKeys.firstNotNullOfOrNull { key -> songsByKey[key] }
                     },
-                    // 换维度就把多选清掉：多选只对"歌曲"那一张平铺列表有意义，
-                    // 带着它切到专辑网格，底部那条批量操作条会指着一批网格里看不见的歌
-                    onSelect = {
-                        onClearSelection()
-                        onBrowseModeChange(it)
-                    }
+                    onSelect = onSelectPlaylist,
+                    onCreate = onCreatePlaylist
+                )
+            } else if (!inPlaylist) {
+                BrowseHeader(
+                    mode = state.browseMode,
+                    count = if (state.browseMode == LibraryBrowse.ALBUMS) {
+                        state.albumGroups.size
+                    } else {
+                        state.artistGroups.size
+                    },
+                    onBackToSongs = { onBrowseModeChange(LibraryBrowse.SONGS) }
                 )
             }
         }
@@ -663,10 +635,10 @@ fun LibraryContent(
                 inPlaylist && shown.isEmpty() && playlist.songKeys.isEmpty() -> EmptyState(
                     icon = MelodyIcons.Playlist,
                     title = "这个歌单还是空的",
-                    description = "回到「全部」，在歌曲右侧的 ⋮ 里选「加入歌单」把这几首收进来。" +
+                    description = "回到「全部歌曲」，在歌曲右侧的 ⋮ 里选「加入歌单」把这几首收进来。" +
                         "歌单里的顺序就是播放顺序，可以用「上移 / 下移」自己排。",
                     action = {
-                        Button(onClick = { onSelectPlaylist(null) }) { Text("回到全部") }
+                        Button(onClick = { onSelectPlaylist(null) }) { Text("回到全部歌曲") }
                     },
                     modifier = Modifier.align(Alignment.Center)
                 )
@@ -767,24 +739,6 @@ fun LibraryContent(
                             bottom = contentPadding.calculateBottomPadding() + 16.dp
                         )
                     ) {
-                        // -------------------------------------------------- 回访榜单
-                        // 只在"整库的歌曲视图"里出现：搜索时用户心里已经有目标，
-                        // 歌单里他要的是自己排的那几首 —— 两种情况下推荐别的都是打扰。
-                        if (!state.searchActive && !inPlaylist && !state.browseDetailOpen) {
-                            item(key = "history") {
-                                HistorySection(
-                                    board = board,
-                                    songs = boardSongs,
-                                    recentCount = state.recentPlayedSongs.size,
-                                    mostCount = state.mostPlayedSongs.size,
-                                    onBoardChange = { board = it },
-                                    onPlayAt = { index -> onPlaySongs(boardSongs, index) },
-                                    onPlayAll = { onPlaySongs(boardSongs, 0) },
-                                    modifier = Modifier.padding(bottom = 6.dp)
-                                )
-                            }
-                        }
-
                         if (state.query.isNotBlank()) {
                             item(key = "search-header") {
                                 Text(
@@ -890,6 +844,34 @@ fun LibraryContent(
                 modifier = Modifier.padding(bottom = contentPadding.calculateBottomPadding())
             )
         }
+    }
+}
+
+/**
+ * 「按专辑 / 按歌手浏览」时的标题行：左边说明现在在看什么，右边是回歌曲列表的出口。
+ *
+ * 这原来是首屏上一个三段的分段控件（`歌曲 / 专辑 / 歌手`）。它占了整整一行、
+ * 而且**只在两种维度之间切换**，却和歌单卡、榜单卡挤在一起 —— 首屏第一屏几乎全是导航。
+ * 现在改由顶栏 ⋮ 里的「浏览方式」进入（见 [LibraryTopBar]），进来之后才出现这一行。
+ *
+ * 返回按钮必须写成文字而不是一个箭头：这里的"上一层"与顶栏的搜索 / 排序不是一回事，
+ * 一个光秃秃的箭头没人认得出它退到哪儿去。
+ */
+@Composable
+private fun BrowseHeader(mode: LibraryBrowse, count: Int, onBackToSongs: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "按${mode.label}浏览 · $count ${if (mode == LibraryBrowse.ALBUMS) "张" else "位"}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onBackToSongs) { Text("返回歌曲列表") }
     }
 }
 

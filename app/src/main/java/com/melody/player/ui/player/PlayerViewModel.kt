@@ -635,17 +635,34 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     }
 
     /**
-     * 设定睡眠定时。
+     * 设定睡眠定时（预设挡）。
      *
      * deadline 算一次、放两处：一份进状态给界面画倒计时，一份交给 [SleepTimerHost]
      * 由播放服务去等 —— 两边读的是同一个数，显示与到点不会各走各的。
      */
     fun setSleepTimer(option: SleepOption) {
-        val deadline = SleepTimer.deadlineFrom(SleepTimerHost.now(), option)
+        applySleepDeadline(SleepTimer.deadlineFrom(SleepTimerHost.now(), option), option.label)
+    }
+
+    /**
+     * 设定睡眠定时（自定义分钟数）。
+     *
+     * 与预设走**同一条落盘路径**（[applySleepDeadline]）：超时时间是一个数，
+     * 两条入口各写一遍 `SleepTimerHost.set` 迟早会出现"其中一条忘了写 ticker"，
+     * 表现就是自定义那一挡倒计时不走、但到点确实会暂停。
+     */
+    fun setSleepTimerMinutes(minutes: Int) {
+        applySleepDeadline(
+            SleepTimer.deadlineFrom(SleepTimerHost.now(), minutes),
+            SleepTimer.customLabel(minutes)
+        )
+    }
+
+    private fun applySleepDeadline(deadline: Long, label: String) {
         _state.update { it.copy(sleepDeadlineMs = deadline) }
         SleepTimerHost.set(deadline)
         ensureSleepTicker()
-        _messages.tryEmit("已设定：${option.label}后暂停播放")
+        _messages.tryEmit("已设定：${label}后暂停播放")
     }
 
     /** 取消睡眠定时。没设过就什么都不做。 */
@@ -670,9 +687,23 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
 
     // ------------------------------------------------------------ 浏览维度
 
-    /** 切换曲库的浏览维度（歌曲 / 专辑 / 歌手）。顺手退出已经打开的详情页。 */
+    /**
+     * 切换曲库的浏览维度（歌曲 / 专辑 / 歌手）。顺手退出已经打开的详情页。
+     *
+     * **清掉多选**这条规则放在这里，而不是留给调用方：换维度有两个入口
+     * （顶栏 ⋮ 与专辑 / 歌手网格顶部那条返回条），各写一遍迟早漏一处；
+     * 而带着一批"歌曲列表里选中的曲目"切到专辑网格，底部那条"已选 N 首"
+     * 指的是屏幕上一个也看不见的东西。
+     */
     fun setBrowseMode(mode: LibraryBrowse) {
-        _state.update { it.copy(browseMode = mode, openAlbumKey = null, openArtist = null) }
+        _state.update {
+            it.copy(
+                browseMode = mode,
+                openAlbumKey = null,
+                openArtist = null,
+                selection = emptySet()
+            )
+        }
     }
 
     fun openAlbum(group: AlbumGroup) {
@@ -989,10 +1020,20 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
      * 不清的话操作条会顶着"已选 5 首"作用到一个新视图里一首都看不见的集合上 ——
      * 用户点的每一个批量操作都会得到"没有可处理的曲目"。
      */
+    /**
+     * 选一个歌单（`null` = 回到「全部歌曲」，也就是那个默认歌单）。
+     *
+     * 一并把浏览维度拧回"歌曲"：歌单只能以平铺列表看 —— 它的意义就是用户手排的顺序，
+     * 按专辑或歌手再拆一遍那个顺序就没了。而歌单卡的入口只在歌曲维度里露出来，
+     * 这条不变量不能靠"反正点不到"来维持。
+     */
     fun selectPlaylist(id: String?) {
         _state.update {
             it.copy(
                 activePlaylistId = id,
+                browseMode = LibraryBrowse.SONGS,
+                openAlbumKey = null,
+                openArtist = null,
                 query = "",
                 searchActive = false,
                 selection = emptySet()

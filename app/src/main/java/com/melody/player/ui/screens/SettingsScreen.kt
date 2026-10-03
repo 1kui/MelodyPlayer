@@ -1,10 +1,12 @@
 package com.melody.player.ui.screens
 
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,6 +24,7 @@ import com.melody.player.ui.components.MelodyInfoSheet
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
 import com.melody.player.ui.screens.settings.HelpTopic
+import com.melody.player.ui.screens.settings.LocalSettingsListState
 import com.melody.player.ui.screens.settings.SettingsAboutPage
 import com.melody.player.ui.screens.settings.SettingsAppearancePage
 import com.melody.player.ui.screens.settings.SettingsArchivePage
@@ -198,30 +201,46 @@ fun SettingsContent(
     var helpTopic by remember { mutableStateOf<HelpTopic?>(null) }
     val openHelp: (HelpTopic) -> Unit = { helpTopic = it }
 
-    when (page) {
-        SettingsPage.ROOT -> SettingsRootContent(
-            state = state,
-            actions = actions,
-            sleepRemaining = sleepRemaining,
-            contentPadding = contentPadding,
-            modifier = modifier
-        )
+    /**
+     * 每一页各留一份滚动状态，**放在这个容器里**。
+     *
+     * 页面自己的 `LazyColumn` 记不住位置：点进二级页时下面的 `when (page)` 换了分支，
+     * 首屏整棵子树离开组合、它内部 `remember` 的 `LazyListState` 跟着被丢弃，
+     * 返回时列表从第 0 项重建 —— 用户报的"返回后弹回顶部"就是这个。
+     * 状态挂在这一层就活得比页面久：它只在**离开整个设置标签页**时才消失。
+     *
+     * 用 `remember(page)` 把查表结果缓存住，避免每次重组都往 map 里查一遍
+     * （写 map 是幂等的，但重组路径上不该有副作用）。
+     */
+    val listStates = remember { mutableMapOf<SettingsPage, LazyListState>() }
+    val listState = remember(page) { listStates.getOrPut(page) { LazyListState() } }
 
-        SettingsPage.LIBRARY -> SettingsLibraryPage(state, actions, contentPadding, openHelp, modifier)
-        SettingsPage.ARCHIVE -> SettingsArchivePage(state, actions, contentPadding, openHelp, modifier)
-        SettingsPage.HIDDEN -> SettingsHiddenPage(state, actions, contentPadding, modifier)
-        SettingsPage.PLAYBACK -> SettingsPlaybackPage(
-            state = state,
-            actions = actions,
-            sleepRemaining = sleepRemaining,
-            contentPadding = contentPadding,
-            modifier = modifier
-        )
-        SettingsPage.APPEARANCE -> SettingsAppearancePage(state, actions, contentPadding, modifier)
-        SettingsPage.LYRICS -> SettingsLyricsPage(state, actions, contentPadding, openHelp, modifier)
-        SettingsPage.COVER -> SettingsCoverPage(state, actions, contentPadding, openHelp, modifier)
-        SettingsPage.KWM -> SettingsKwmPage(state, actions, contentPadding, openHelp, modifier)
-        SettingsPage.ABOUT -> SettingsAboutPage(contentPadding, modifier)
+    CompositionLocalProvider(LocalSettingsListState provides listState) {
+        when (page) {
+            SettingsPage.ROOT -> SettingsRootContent(
+                state = state,
+                actions = actions,
+                sleepRemaining = sleepRemaining,
+                contentPadding = contentPadding,
+                modifier = modifier
+            )
+
+            SettingsPage.LIBRARY -> SettingsLibraryPage(state, actions, contentPadding, openHelp, modifier)
+            SettingsPage.ARCHIVE -> SettingsArchivePage(state, actions, contentPadding, openHelp, modifier)
+            SettingsPage.HIDDEN -> SettingsHiddenPage(state, actions, contentPadding, modifier)
+            SettingsPage.PLAYBACK -> SettingsPlaybackPage(
+                state = state,
+                actions = actions,
+                sleepRemaining = sleepRemaining,
+                contentPadding = contentPadding,
+                modifier = modifier
+            )
+            SettingsPage.APPEARANCE -> SettingsAppearancePage(state, actions, contentPadding, modifier)
+            SettingsPage.LYRICS -> SettingsLyricsPage(state, actions, contentPadding, openHelp, modifier)
+            SettingsPage.COVER -> SettingsCoverPage(state, actions, contentPadding, openHelp, modifier)
+            SettingsPage.KWM -> SettingsKwmPage(state, actions, contentPadding, openHelp, modifier)
+            SettingsPage.ABOUT -> SettingsAboutPage(contentPadding, modifier)
+        }
     }
 
     helpTopic?.let { topic ->

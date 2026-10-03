@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -32,6 +34,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -482,19 +486,43 @@ internal fun FoldableHelp(topic: HelpTopic, onOpen: (HelpTopic) -> Unit) {
 }
 
 /**
+ * 「当前这一页」的滚动状态，由 [com.melody.player.ui.screens.SettingsContent] 提供。
+ *
+ * 走 CompositionLocal 而不是给九个页面各加一个参数：这九个页面的签名里已经躺着
+ * `state / actions / contentPadding / openHelp` 四样东西，再加一样就要改九份调用；
+ * 而它本来就是**页面的容器**才知道的事情 —— 页面自己不该关心"我的滚动位置要活多久"。
+ *
+ * 不提供时取 `null`，[SettingsPageList] 会退回自己 `remember` 一份（单独预览一页时用）。
+ */
+internal val LocalSettingsListState = staticCompositionLocalOf<LazyListState?> { null }
+
+/**
  * 设置页每一页（首屏与九个二级页）的列表骨架。
  *
  * 抽出来只为一件事：**首屏和二级页的栅格必须一模一样**。用户从首屏点进"曲库"，
  * 卡片却往左挪了 4dp、或顶上少了一条留白，读起来就是"这是另一个地方"。
  * 九个页面各写一遍 LazyColumn(...) 参数，迟早会有某一页的参数被人顺手改掉。
+ *
+ * ## 滚动状态为什么从上面来
+ * 默认的 `LazyColumn` 会在内部 `rememberLazyListState()` —— 而它随页面一起被销毁：
+ * 从首屏点进二级页时 `when (page)` 换了分支，首屏整棵子树离开组合，
+ * 它记住的"我滚到第几项"也就没了。返回时列表重建，**必定弹回顶部**。
+ * 所以状态由 [SettingsContent] 按页持有并经 [LocalSettingsListState] 下发，
+ * 一页一份，切回来还在原处。
  */
 @Composable
 internal fun SettingsPageList(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    listState: LazyListState? = LocalSettingsListState.current,
     content: LazyListScope.() -> Unit
 ) {
+    // 没有上层提供时兜一个自己的（例如把一个页面单独拿出来预览）。
+    // 必须无条件调用，不能写成 `?: rememberLazyListState()` —— 条件组合会让
+    // 插桩后的槽位在不同的组合路径上错位。
+    val fallback = rememberLazyListState()
     LazyColumn(
+        state = listState ?: fallback,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             start = CardPad,
