@@ -77,10 +77,6 @@ class LyricsStore(context: Context) {
         dir.listFiles()?.count { it.isFile && it.name.endsWith(EXTENSION) } ?: 0
     }.getOrDefault(0)
 
-    fun totalBytes(): Long = runCatching {
-        dir.listFiles()?.filter { it.isFile && it.name.endsWith(EXTENSION) }?.sumOf { it.length() } ?: 0L
-    }.getOrDefault(0L)
-
     // ---------------------------------------------------------------- 副本管理
 
     /**
@@ -127,24 +123,6 @@ class LyricsStore(context: Context) {
         if (!removed) return false
         readIndex().firstOrNull { fileNameFor(it.key) == file.name }?.let { removeMeta(it.key) }
         return true
-    }
-
-    /** 清空全部副本，返回 (文件数, 释放字节数)。 */
-    fun deleteAll(): Pair<Int, Long> {
-        var count = 0
-        var bytes = 0L
-        runCatching {
-            dir.listFiles()?.forEach { file ->
-                if (!file.isFile) return@forEach
-                val size = file.length()
-                if (file.delete() && file.name.endsWith(EXTENSION)) {
-                    count++
-                    bytes += size
-                }
-            }
-        }
-        writeIndex(emptyList())
-        return count to bytes
     }
 
     // ---------------------------------------------------------------- 索引内部实现

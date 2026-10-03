@@ -1,6 +1,7 @@
 package com.melody.player.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,12 +19,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.melody.player.ui.icons.MelodyIcons
 
@@ -216,6 +219,121 @@ fun MelodyInfoSheet(
             // 也不会因为内容短就把这段留白也滚走
             Spacer(Modifier.navigationBarsPadding().height(16.dp))
         }
+    }
+}
+
+/**
+ * 内容是一批**条目**的底部弹层。
+ *
+ * 这是这一套里的第三种形态，前两种都套不上：
+ *  - [MelodyActionSheet] 是"一串并列的动作"（每项一个图标、一句后果），
+ *  - [MelodyInfoSheet] 是"一段连续的文字"（读完就走），
+ *  - 这里是"一批带状态、还能单独操作的条目"（已隐藏的曲目、某几首歌的歌词副本）：
+ *    每一行有自己的信息、自己的按钮，还要能被向下滚动着一条条看完。
+ *
+ * ## 为什么内容区要自己限高
+ * 条目数由用户的曲库决定（隐藏几百首就会铺几百行）。让弹层跟着内容长高的话，
+ * 它会先顶到屏幕顶端、再把标题挤出可视区 —— 用户看见的就是"一屏条目、
+ * 不知道这是什么"。给内容区一个上限并让它内部滚动，标题和底部动作始终在。
+ *
+ * ## 为什么底部动作挂在滚动区**外面**
+ * 「全部恢复」这类动作是这一屏的**出口**。放在滚动区里，条目一多就得先滚到底
+ * 才够得着 —— 而用户恰恰是"看烦了才想一键处理"。
+ */
+@Composable
+fun MelodyListSheet(
+    title: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    /** 内容区高度上限：超过就内部滚动。 */
+    maxContentHeight: Dp = 440.dp,
+    /**
+     * 尾部固定区（例如「全部恢复」）。跟着内容滚动的话，长列表里就永远够不到它 ——
+     * 而用户恰恰是"看烦了"才想一键处理。
+     */
+    footer: (@Composable () -> Unit)? = null,
+    /**
+     * 内容区。
+     *
+     * 必须留在**最后一个参数**上：调用处写的是尾随 lambda（`MelodyListSheet(...) { … }`），
+     * 而尾随 lambda 只会绑到最后一个参数 —— 放在 [footer] 前面的话，
+     * 那段 `{ … }` 会去填 footer，内容区反而"没有值传入"。
+     */
+    content: @Composable () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 14.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Box(modifier = Modifier.fillMaxWidth().heightIn(max = maxContentHeight)) {
+                content()
+            }
+            if (footer != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                footer()
+            }
+            // 底部留白挂在滚动区外面：滚到底时不至于贴着导航栏，
+            // 也不会因为内容短就把这段留白一起滚走
+            Spacer(Modifier.navigationBarsPadding().height(12.dp))
+        }
+    }
+}
+
+/**
+ * [MelodyListSheet] 底部固定区的按钮。
+ *
+ * 整条可点而不是一个小按钮：它是这一屏的**出口**（全部恢复 / 删除以上全部），
+ * 手指在弹层上本来就靠下，横跨一整条最好点，也最不容易点错。
+ */
+@Composable
+fun SheetFooterButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    danger: Boolean = false,
+    enabled: Boolean = true
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = when {
+                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                danger -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.primary
+            }
+        )
     }
 }
 

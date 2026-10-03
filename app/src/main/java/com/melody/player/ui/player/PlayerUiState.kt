@@ -221,12 +221,22 @@ data class PlayerUiState(
      * 有了它才能**单独取消某一首**的归档 —— 只给个总数就只能整库清除。
      */
     val archivedEntries: List<ArchivedEntry> = emptyList(),
-    /** App 私有目录里的歌词副本，按保存时间从新到旧（含自动匹配的缓存）。 */
-    val lyricCopies: List<LyricCopyEntry> = emptyList(),
-    /** 上面那些副本**按歌曲归并**后的视图，界面按歌展开管理。 */
+    /**
+     * App 私有目录里的歌词副本，**按歌曲归并**后的视图。
+     *
+     * 状态里只留归并后的这一份：按份平铺的原始列表在"按歌收拾"这件事上没用 ——
+     * 同一首歌的两份散在两处，用户既看不出它们是一家，也没法表达
+     * "这首歌的歌词我都不要了"。
+     */
     val lyricCopyGroups: List<LyricCopyGroup> = emptyList(),
-    /** 歌词副本占用的字节数。 */
-    val lyricCopiesBytes: Long = 0L,
+    /**
+     * 「歌词副本」弹层正在看哪几首歌；null = 没打开。
+     *
+     * 与 [embedRequestKeys] 同一个道理：入口有三个（曲库行菜单、播放页、多选批量条），
+     * 各自的作用对象不同，弹层必须照着被点的那一处来 —— 让它自己去读 [selection]，
+     * 从单曲入口点开就会列出一堆不相干的歌。
+     */
+    val lyricCopyRequestKeys: Set<String>? = null,
     /** 正在预览的那份副本正文；null 表示没开预览。 */
     val lyricPreview: LyricCopyPreview? = null,
     val archiving: Boolean = false,

@@ -112,6 +112,8 @@ fun PlayerScreen(
     onEmbedTags: () -> Unit,
     /** 把当前这首加进自建歌单。 */
     onAddToPlaylist: () -> Unit,
+    /** 看一眼当前这首在 App 里存了哪几份歌词副本（可预览、可删）。 */
+    onManageLyricCopies: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val song = state.currentSong
@@ -186,7 +188,8 @@ fun PlayerScreen(
                                 onFetchOnlineLyrics = onFetchOnlineLyrics,
                                 onImportLyrics = onImportLyrics,
                                 onReloadLyrics = onReloadLyrics,
-                                onClearImportedLyrics = onClearImportedLyrics
+                                onClearImportedLyrics = onClearImportedLyrics,
+                                onManageLyricCopies = onManageLyricCopies
                             ),
                             onDismiss = { menuOpen = false }
                         )
@@ -352,7 +355,8 @@ private fun playerActions(
     onFetchOnlineLyrics: () -> Unit,
     onImportLyrics: () -> Unit,
     onReloadLyrics: () -> Unit,
-    onClearImportedLyrics: () -> Unit
+    onClearImportedLyrics: () -> Unit,
+    onManageLyricCopies: () -> Unit
 ): List<SheetAction> {
     val cover = listOf(
         SheetAction(
@@ -409,6 +413,15 @@ private fun playerActions(
                 "重新解析内嵌歌词",
                 subtitle = "重读文件里内嵌的那份歌词",
                 onClick = onReloadLyrics
+            )
+        )
+        // 就放在歌词这几项中间：此刻用户正对着歌词，想收拾的就是它
+        add(
+            SheetAction(
+                MelodyIcons.Lyrics,
+                "歌词副本…",
+                subtitle = "看看 App 里为这首存了哪几份歌词，可预览、可删",
+                onClick = onManageLyricCopies
             )
         )
         if (lyricsImported) {

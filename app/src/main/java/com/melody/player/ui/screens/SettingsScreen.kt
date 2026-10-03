@@ -22,13 +22,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.FilterChip
@@ -61,9 +59,7 @@ import androidx.compose.ui.unit.dp
 import com.melody.player.BuildConfig
 import com.melody.player.core.ArchivedEntry
 import com.melody.player.core.ArtworkShape
-import com.melody.player.core.LyricCopyEntry
-import com.melody.player.core.LyricCopyGroup
-import com.melody.player.core.LyricOrigin
+import com.melody.player.core.HiddenSongEntry
 import com.melody.player.core.LyricTextSize
 import com.melody.player.core.TimeFormat
 import com.melody.player.core.kwm.KwmFile
@@ -75,32 +71,15 @@ import com.melody.player.core.online.RegionPing
 import com.melody.player.ui.AboutInfo
 import com.melody.player.ui.components.IconAction
 import com.melody.player.ui.components.MelodyInfoSheet
+import com.melody.player.ui.components.MelodyListSheet
 import com.melody.player.ui.components.SectionCard
 import com.melody.player.ui.components.SettingRow
+import com.melody.player.ui.components.SheetFooterButton
 import com.melody.player.ui.icons.MelodyIcons
 import com.melody.player.ui.player.PlayerUiState
 import com.melody.player.ui.rememberAboutActions
 import com.melody.player.ui.theme.AccentTheme
 import com.melody.player.ui.theme.ThemeMode
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-/**
- * 隐藏列表最多逐条展示多少首。
- *
- * 整段是 LazyColumn 里的**一个 item**，不能指望它懒加载；隐藏了几百首时一口气铺开
- * 会白白拖慢设置页的滚动。超出的部分交给「全部恢复」。
- */
-private const val HIDDEN_PREVIEW_LIMIT = 30
-
-/**
- * 歌词副本按歌曲归并后最多展示多少组。
- *
- * 归并之后每一行代表一首歌（不再是每一份副本），所以这个数可以比原来
- * 「按份平铺」时松一些；但也别太高 —— 整段仍然是 LazyColumn 里的一个 item。
- */
-private const val LYRIC_COPY_GROUP_LIMIT = 40
 
 /**
  * 已归档曲目最多逐条展示多少首（展开「App 音乐库」里的已归档列表时）。
@@ -188,11 +167,6 @@ fun SettingsContent(
     onClearArchive: () -> Unit,
     onUnarchive: (ArchivedEntry) -> Unit,
     onAutoFetchLyricsChange: (Boolean) -> Unit,
-    onPreviewLyricCopy: (LyricCopyEntry) -> Unit,
-    onDismissLyricPreview: () -> Unit,
-    onDeleteLyricCopy: (LyricCopyEntry) -> Unit,
-    onDeleteLyricCopyGroup: (LyricCopyGroup) -> Unit,
-    onDeleteAllLyricCopies: () -> Unit,
     onKwmScanDevice: () -> Unit,
     onKwmPickFolder: () -> Unit,
     onKwmRescanFolder: () -> Unit,
@@ -226,10 +200,7 @@ fun SettingsContent(
 ) {
     var confirmClear by remember { mutableStateOf(false) }
     var confirmClearKwm by remember { mutableStateOf(false) }
-    var pendingDeleteLyric by remember { mutableStateOf<LyricCopyEntry?>(null) }
-    var pendingDeleteLyricGroup by remember { mutableStateOf<LyricCopyGroup?>(null) }
     var pendingUnarchive by remember { mutableStateOf<ArchivedEntry?>(null) }
-    var confirmClearLyrics by remember { mutableStateOf(false) }
     val aboutActions = rememberAboutActions()
 
     /**
@@ -241,128 +212,11 @@ fun SettingsContent(
      */
     var helpTopic by remember { mutableStateOf<HelpTopic?>(null) }
 
+    /** 「已隐藏的曲目」的弹层是否打开。 */
+    var hiddenSheetOpen by remember { mutableStateOf(false) }
+
     // 折叠状态：默认都收起，点标题行才展开。整页本来就长，列表默认铺开很难受
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
-    var hiddenExpanded by rememberSaveable { mutableStateOf(false) }
-    var lyricCopiesExpanded by rememberSaveable { mutableStateOf(false) }
-    // 哪几首歌的副本展开了。用普通 remember 就够：Set 不是 rememberSaveable 认的类型，
-    // 硬塞进去会在保存时抛异常；切走再回来重新收起是可以接受的
-    var expandedCopyGroups by remember { mutableStateOf(emptySet<String>()) }
-
-    state.lyricPreview?.let { preview ->
-        AlertDialog(
-            onDismissRequest = onDismissLyricPreview,
-            title = {
-                Text(
-                    text = preview.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = preview.text.trim(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = onDismissLyricPreview) { Text("关闭") }
-            }
-        )
-    }
-
-    pendingDeleteLyric?.let { entry ->
-        AlertDialog(
-            onDismissRequest = { pendingDeleteLyric = null },
-            title = { Text("删除这份歌词副本？") },
-            text = {
-                Text(
-                    "「${entry.label}」的这一份会被删掉。" +
-                        "不会动你的音乐文件，也不会动写进音频文件里的歌词 —— " +
-                        "删掉之后这首歌退回使用文件内嵌歌词或同名 .lrc 文件。"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingDeleteLyric = null
-                        onDeleteLyricCopy(entry)
-                    }
-                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDeleteLyric = null }) { Text("取消") }
-            }
-        )
-    }
-
-    if (confirmClearLyrics) {
-        AlertDialog(
-            onDismissRequest = { confirmClearLyrics = false },
-            title = { Text("清空全部歌词副本？") },
-            text = {
-                Text(
-                    "会删掉 App 里的 ${state.lyricCopies.size} 份歌词副本" +
-                        "（共 ${formatBytes(state.lyricCopiesBytes)}）。" +
-                        "同样不会动音乐文件；已经归档的歌词也写进了音频文件的标签里，不受影响。" +
-                        "但如果某份歌词当初只存在 App 里（原文件早没了），删掉就得重新导入。"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmClearLyrics = false
-                        onDeleteAllLyricCopies()
-                    }
-                ) { Text("清空", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClearLyrics = false }) { Text("取消") }
-            }
-        )
-    }
-
-    pendingDeleteLyricGroup?.let { group ->
-        AlertDialog(
-            onDismissRequest = { pendingDeleteLyricGroup = null },
-            title = {
-                Text(
-                    text = "删除「${group.title}」的全部副本？",
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            text = {
-                Text(
-                    "这首歌名下的 ${group.count} 份副本（共 ${formatBytes(group.sizeBytes)}）会一起删掉。" +
-                        "不会动你的音乐文件，也不会动已经写进音频文件里的歌词 —— " +
-                        "删掉之后这首歌退回使用文件内嵌歌词或同名 .lrc 文件。" +
-                        "其中联网自动匹配的那份删掉后，下次播到它、且「自动联网获取歌词」" +
-                        "开着的话，会重新匹配一次。"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingDeleteLyricGroup = null
-                        onDeleteLyricCopyGroup(group)
-                    }
-                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDeleteLyricGroup = null }) { Text("取消") }
-            }
-        )
-    }
 
     pendingUnarchive?.let { entry ->
         AlertDialog(
@@ -650,139 +504,39 @@ fun SettingsContent(
         item(key = "hidden") {
             SectionCard(title = "已隐藏的曲目") {
                 val hidden = state.hiddenSongs
-                // 默认收起：隐藏列表平时用不上，铺开在设置页里只是噪音（还可能几百行）
-                CollapseRow(
+                val openSheet = { hiddenSheetOpen = true }
+                // 隐藏列表可能几百行，摊在设置页里会把整页撑长；而它平时用不上。
+                // 改成一行入口 + 底部弹层：弹层是独立的一层，页面纹丝不动，
+                // 看完划走就回到原处 —— 与说明文字用的是同一套交互。
+                SettingRow(
                     icon = MelodyIcons.EyeOff,
                     title = if (hidden.isEmpty()) {
                         "还没有隐藏任何曲目"
                     } else {
                         "共 ${hidden.size} 首不参与列表与搜索"
                     },
-                    subtitle = if (hiddenExpanded) {
-                        "收起列表"
+                    subtitle = if (hidden.isEmpty()) {
+                        "在曲库列表里点该行的 ⋮ →「隐藏这首」，把不是歌的音频移开"
                     } else {
-                        "点这一行展开：可单独恢复（只影响显示，不删文件）"
+                        "点这一行逐首恢复（只影响显示，不删文件）"
                     },
-                    expanded = hiddenExpanded,
-                    onToggle = { hiddenExpanded = !hiddenExpanded }
-                ) {
-                    if (hidden.isEmpty()) {
-                        NoteText(
-                            "媒体库扫描会把一些不是歌的音频也算进来。在曲库列表里点该行的 ⋮ →" +
-                                "「隐藏这首」，它就不再出现在曲库和搜索结果里（只影响显示，不删文件，" +
-                                "也不动已排好的播放队列）。隐藏过的曲目会列在这里，随时可以恢复。"
-                        )
-                    } else {
-                        hidden.take(HIDDEN_PREVIEW_LIMIT).forEach { entry ->
-                            val missing = entry.key in state.hiddenMissingKeys
-                            SettingRow(
-                                icon = MelodyIcons.EyeOff,
-                                title = entry.title,
-                                subtitle = buildString {
-                                    entry.artist?.let { append(it) }
-                                    if (missing) {
-                                        if (isNotEmpty()) append(" · ")
-                                        append("文件已不在设备上")
-                                    }
-                                }.ifEmpty { null },
-                                trailing = {
-                                    TextButton(onClick = { onUnhide(entry.key) }) { Text("恢复") }
-                                }
-                            )
-                        }
-                        if (hidden.size > HIDDEN_PREVIEW_LIMIT) {
-                            NoteText(
-                                "列表只显示最近隐藏的 $HIDDEN_PREVIEW_LIMIT 首，" +
-                                    "其余可用下方「全部恢复」。"
-                            )
-                        }
-                        ActionRow {
-                            ChipButton(
-                                text = "全部恢复（${hidden.size}）",
-                                icon = MelodyIcons.Eye,
-                                onClick = onRestoreAllHidden,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item(key = "lyric-copies") {
-            SectionCard(title = "歌词副本") {
-                // 默认收起：副本一多这一节能撑出好几屏，而管理副本是低频操作。
-                // 与「已归档曲目」「已隐藏曲目」同一套折叠交互（CollapseRow）——
-                // 区块内不再套第二层折叠，一行标题就是这个区块的全部入口
-                CollapseRow(
-                    icon = MelodyIcons.Lyrics,
-                    title = if (state.lyricCopies.isEmpty()) {
-                        "还没有歌词副本"
-                    } else {
-                        "已保存的副本"
-                    },
-                    subtitle = when {
-                        lyricCopiesExpanded -> "收起列表"
-                        state.lyricCopies.isEmpty() ->
-                            "导入 .lrc、联网获取、归档时都会在这里留一份"
-                        else -> "点这一行展开：看全文、删单份，或删掉一首歌的全部副本"
-                    },
-                    trailing = if (state.lyricCopies.isEmpty()) {
+                    onClick = if (hidden.isEmpty()) null else openSheet,
+                    trailing = if (hidden.isEmpty()) {
                         null
                     } else {
-                        "${state.lyricCopies.size} 份 · ${formatBytes(state.lyricCopiesBytes)}"
-                    },
-                    expanded = lyricCopiesExpanded,
-                    onToggle = { lyricCopiesExpanded = !lyricCopiesExpanded }
-                ) {
-                    RowDivider()
-
-                    if (state.lyricCopies.isEmpty()) {
-                        NoteText(
-                            "还没有副本。原文件被删、授权失效、歌词标签没写进去时，" +
-                                "存在这里的副本仍然能把歌词找回来。"
-                        )
-                    } else {
-                        state.lyricCopyGroups.take(LYRIC_COPY_GROUP_LIMIT).forEach { group ->
-                            val key = group.expandKey
-                            LyricCopyGroupRow(
-                                group = group,
-                                expanded = key in expandedCopyGroups,
-                                onToggle = {
-                                    expandedCopyGroups = if (key in expandedCopyGroups) {
-                                        expandedCopyGroups - key
-                                    } else {
-                                        expandedCopyGroups + key
-                                    }
-                                },
-                                onPreview = onPreviewLyricCopy,
-                                onDelete = { pendingDeleteLyric = it },
-                                onDeleteGroup = { pendingDeleteLyricGroup = group }
-                            )
-                            HorizontalDivider(
-                                modifier = Modifier.padding(start = RowInset),
-                                color = MaterialTheme.colorScheme.outlineVariant
+                        {
+                            Icon(
+                                imageVector = MelodyIcons.ChevronDown,
+                                contentDescription = "查看已隐藏的曲目",
+                                // ChevronDown 转过 -90° 就是向右的箭头（同一个几何只维护一份）
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .rotate(-90f),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (state.lyricCopyGroups.size > LYRIC_COPY_GROUP_LIMIT) {
-                            NoteText(
-                                "只列出最近保存的 $LYRIC_COPY_GROUP_LIMIT 首歌，" +
-                                    "共 ${state.lyricCopyGroups.size} 首；" +
-                                    "其余的在下面的「清空全部」里可一并清掉。"
-                            )
-                        }
-                        ActionRow {
-                            ChipButton(
-                                text = "清空全部副本（${state.lyricCopies.size}）",
-                                icon = MelodyIcons.Delete,
-                                onClick = { confirmClearLyrics = true },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        // 删副本的后果只留一句；逐条细节在确认弹窗里说
-                        NoteText("删副本不会动音乐文件，也不会动已经写进音频文件的歌词。")
                     }
-                }
+                )
             }
         }
 
@@ -1448,6 +1202,90 @@ fun SettingsContent(
             onDismiss = { helpTopic = null }
         )
     }
+
+    // 「已隐藏的曲目」的弹层。同样挂在列表外面：列表里的行会被 LazyColumn 回收，
+    // 状态（和弹层）挂在行上，行一没就跟着没了
+    if (hiddenSheetOpen) {
+        HiddenSongsSheet(
+            hidden = state.hiddenSongs,
+            missingKeys = state.hiddenMissingKeys,
+            onUnhide = onUnhide,
+            onRestoreAll = onRestoreAllHidden,
+            onDismiss = { hiddenSheetOpen = false }
+        )
+    }
+}
+
+/**
+ * 「已隐藏的曲目」底部弹层。
+ *
+ * 以前是设置页里的一段折叠列表，两个毛病：
+ *  1. 它只铺前 30 首（整段只是 LazyColumn 里的一个 item，不能指望它懒加载），
+ *     隐藏了几百首时除了"全部恢复"就没法逐首挑；
+ *  2. 摊开之后整页被顶长，读完还得重新找那一段在哪。
+ * 换成弹层之后这两个都没了：弹层里是**真**的 LazyColumn（要多少有多少，
+ * 不必再截断），页面也纹丝不动。
+ */
+@Composable
+private fun HiddenSongsSheet(
+    hidden: List<HiddenSongEntry>,
+    missingKeys: Set<String>,
+    onUnhide: (String) -> Unit,
+    onRestoreAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    MelodyListSheet(
+        title = "已隐藏的曲目",
+        subtitle = if (hidden.isEmpty()) {
+            null
+        } else {
+            "${hidden.size} 首 · 只影响显示，不删文件"
+        },
+        onDismiss = onDismiss,
+        footer = if (hidden.isEmpty()) {
+            null
+        } else {
+            { SheetFooterButton(text = "全部恢复（${hidden.size}）", onClick = onRestoreAll) }
+        }
+    ) {
+        if (hidden.isEmpty()) {
+            Text(
+                text = "媒体库扫描会把一些不是歌的音频也算进来。\n\n" +
+                    "在曲库列表里点该行的 ⋮ →「隐藏这首」，它就不再出现在曲库和搜索结果里" +
+                    "（只影响显示，不删文件，也不动已排好的播放队列）。" +
+                    "隐藏过的曲目会列在这里，随时可以恢复。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
+            )
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                items(items = hidden, key = { it.key }) { entry ->
+                    val missing = entry.key in missingKeys
+                    SettingRow(
+                        icon = MelodyIcons.EyeOff,
+                        title = entry.title,
+                        // 文件不在设备上要如实说：否则用户按了"恢复"却什么都没回来，
+                        // 会以为是恢复没生效，而不是"这个文件本来就没了"
+                        subtitle = buildString {
+                            entry.artist?.let { append(it) }
+                            if (missing) {
+                                if (isNotEmpty()) append(" · ")
+                                append("文件已不在设备上")
+                            }
+                        }.ifEmpty { null },
+                        trailing = {
+                            TextButton(onClick = { onUnhide(entry.key) }) { Text("恢复") }
+                        }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1883,7 +1721,7 @@ private fun ArchivedRow(entry: ArchivedEntry, onUnarchive: () -> Unit) {
                     entry.artist?.takeIf { it.isNotBlank() }?.let { append("$it · ") }
                     append(formatBytes(entry.sizeBytes))
                     append(" · ")
-                    append(savedAtText(entry.archivedAtSec))
+                    append(TimeFormat.ago(entry.archivedAtSec))
                     if (entry.lyricsEmbedded) append(" · 含内嵌歌词")
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -1973,191 +1811,6 @@ private fun KwmFileRow(
             touchSize = 40.dp,
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-/**
- * 「歌词副本」区块里的**一首歌**（而不是一份副本）。
- *
- * 磁盘上的副本是按槽位存的，同一首歌最多可以有两份：用户选定的那份、联网自动匹配的缓存。
- * 按份平铺时用户看到的是两条互不相干的行，既看不出它们属于同一首歌，
- * 也没法表达「这首歌的歌词我全都不要了」。所以这里按歌收起，点开才是每一份。
- */
-@Composable
-private fun LyricCopyGroupRow(
-    group: LyricCopyGroup,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    onPreview: (LyricCopyEntry) -> Unit,
-    onDelete: (LyricCopyEntry) -> Unit,
-    onDeleteGroup: () -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        LyricCopyGroupHeader(group = group, expanded = expanded, onToggle = onToggle)
-        // 一首歌的副本展开也走同一套动画：外层弹、里层硬切的话，
-        // 点开某首歌会像"卡了一下"，两处必须同手感
-        ExpandableContent(visible = expanded) {
-            group.entries.forEach { entry ->
-                LyricCopyRow(
-                    entry = entry,
-                    onPreview = { onPreview(entry) },
-                    onDelete = { onDelete(entry) }
-                )
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = RowInset),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
-            }
-            ActionRow {
-                ChipButton(
-                    text = if (group.count > 1) {
-                        "删除这首歌的全部副本（${group.count}）"
-                    } else {
-                        "删除这首歌的副本"
-                    },
-                    icon = MelodyIcons.Delete,
-                    onClick = onDeleteGroup,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-/** 「歌词副本」里一首歌的标题行：点整行展开它的每一份副本。 */
-@Composable
-private fun LyricCopyGroupHeader(
-    group: LyricCopyGroup,
-    expanded: Boolean,
-    onToggle: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle)
-            .padding(horizontal = CardPad, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = MelodyIcons.Lyrics,
-            contentDescription = null,
-            modifier = Modifier.size(22.dp),
-            tint = if (group.songKey == null) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.primary
-            }
-        )
-        Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = group.title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = buildString {
-                    append("${group.count} 份 · ${formatBytes(group.sizeBytes)}")
-                    // 自动匹配的那份是缓存，随时可删；单独说一句，免得和「选定」的混为一谈
-                    if (group.autoCount > 0) append(" · 含 ${group.autoCount} 份自动匹配")
-                    append(" · ")
-                    append(savedAtText(group.latestSavedAtSec))
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(4.dp))
-        CollapseChevron(expanded = expanded, size = 20.dp)
-    }
-}
-
-/**
- * 一份歌词副本。
- *
- * 左边多留 16dp：它是展开后的子行，缩进一格才看得出层级（父行图标在 16dp）。
- */
-@Composable
-private fun LyricCopyRow(
-    entry: LyricCopyEntry,
-    onPreview: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onPreview)
-            .padding(start = RowInset, end = 6.dp, top = 10.dp, bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = MelodyIcons.Lyrics,
-            contentDescription = null,
-            modifier = Modifier.size(22.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = entry.label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = lyricCopySubtitle(entry),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        IconAction(
-            imageVector = MelodyIcons.Delete,
-            contentDescription = "删除这份歌词副本",
-            onClick = onDelete,
-            iconSize = 20.dp,
-            touchSize = 40.dp,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-/** 副本的副标题：怎么来的（联网的还要写清是哪一家）· 多大 · 什么时候存的。 */
-private fun lyricCopySubtitle(entry: LyricCopyEntry): String = buildString {
-    append(
-        when (entry.origin) {
-            LyricOrigin.FILE -> "导入的 .lrc"
-            LyricOrigin.ONLINE -> if (entry.autoMatched) "联网自动匹配" else "联网获取"
-            LyricOrigin.ARCHIVED -> "归档时的快照"
-            null -> "来源未知"
-        }
-    )
-    // 两家来源的曲库不同，管理副本时要能看出这份到底是哪来的
-    entry.container?.takeIf { it.isNotBlank() }?.let {
-        append(" · ")
-        append(it)
-    }
-    append(" · ")
-    append(formatBytes(entry.sizeBytes))
-    append(" · ")
-    append(savedAtText(entry.savedAtSec))
-}
-
-private fun savedAtText(epochSec: Long): String {
-    if (epochSec <= 0L) return "保存时间未知"
-    val days = (System.currentTimeMillis() / 1000L - epochSec) / 86_400L
-    return when {
-        days <= 0L -> "今天保存"
-        days == 1L -> "昨天保存"
-        days < 30L -> "$days 天前保存"
-        else -> SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(epochSec * 1000L))
     }
 }
 

@@ -1447,7 +1447,7 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
     private fun refreshLyricCopies() {
         val titles = allSongs.associate { it.key to it.title }
         viewModelScope.launch {
-            val loaded = withContext(Dispatchers.IO) {
+            val copies = withContext(Dispatchers.IO) {
                 // 自动匹配的缓存槽位没有偏好痕迹，得自己补上，否则它认不回歌曲
                 val known = prefs.knownLyricKeys()
                 val slots = known + known.map { LyricCopyKeys.AUTO_MATCH_PREFIX + it }
@@ -1457,18 +1457,35 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
                         titles[base] ?: prefs.lyricNameFor(base)
                     }
                 }
-                lyricsStore.list(slots, fallback)?.let { it to lyricsStore.totalBytes() }
+                lyricsStore.list(slots, fallback)
             } ?: return@launch
-            val copies = loaded.first
             _state.update {
                 it.copy(
-                    lyricCopies = copies,
                     // 界面按歌展开管理，归并规则是纯函数（core/LyricCopyGroups）
-                    lyricCopyGroups = LyricCopyGroups.group(copies) { key -> titles[key] },
-                    lyricCopiesBytes = loaded.second
+                    lyricCopyGroups = LyricCopyGroups.group(copies) { key -> titles[key] }
                 )
             }
         }
+    }
+
+    /**
+     * 打开「歌词副本」弹层，看这几首歌存了哪些副本。
+     *
+     * 三个入口（曲库行菜单 / 播放页 / 多选批量条）都走这里，作用对象由调用方给：
+     * 弹层不读 `selection` 自己去猜 —— 从单曲入口点开就会列出一堆不相干的歌。
+     *
+     * 打开前顺手重读一遍磁盘：列表可能在别处被改过（刚导入歌词、刚归档、
+     * 或用户在文件管理器里删了文件），而这个弹层是"看实情"的地方，
+     * 拿一份过期的缓存出来比转一下圈更糟。
+     */
+    fun requestLyricCopies(keys: Set<String>) {
+        if (keys.isEmpty()) return
+        refreshLyricCopies()
+        _state.update { it.copy(lyricCopyRequestKeys = keys) }
+    }
+
+    fun dismissLyricCopies() {
+        _state.update { it.copy(lyricCopyRequestKeys = null) }
     }
 
     /** 打开一份副本的正文预览。 */
@@ -1571,26 +1588,63 @@ private val embeddedArt = EmbeddedArtworkCache.of(app)
         }
     }
 
-    /** 清空全部副本。播放中的那首歌会跟着重新解析，退回文件内嵌歌词。 */
-    fun deleteAllLyricCopies() {
+    /**
+     * 删掉这几首歌名下的**全部**副本（弹层底部的「删除以上全部」）。
+     *
+     * 刻意只删**传进来的这些组**，而不是整目录清空：弹层的底部动作说的是
+     * "以上全部"，用户指的是他眼前列出的这几首。按目录清空的话，
+     * 一个只想收拾当前这两首的人会连别的歌的副本一起丢掉 —— 那正是
+     * "按钮写的和做的不一致"里最贵的一种。
+     *
+     * 删完必须补两步，否则用户会觉得「删了没反应」：
+     * 1. 清偏好里的痕迹（`lyric_uri_` / `lyric_name_` / `lyric_origin_`），
+     *    不然文件没了、界面上的来源标注还挂着；
+     * 2. 正在播的就是其中之一的话重新解析歌词，否则页面上还显示着刚删掉的那份。
+     *
+     * 自动匹配的那份不动偏好 —— 它和「用户选定」是两个槽位，删缓存不该连
+     * 用户亲手导入的记录一起抹掉。
+     */
+    fun deleteLyricCopyGroups(groups: List<LyricCopyGroup>) {
+        val targets = groups.filter { it.entries.isNotEmpty() }
+        if (targets.isEmpty()) return
         viewModelScope.launch {
-            val known = withContext(Dispatchers.IO) { prefs.knownLyricKeys() }
-            val (count, bytes) = withContext(Dispatchers.IO) { lyricsStore.deleteAll() }
-            if (count == 0) {
+            val gone = withContext(Dispatchers.IO) {
+                targets.flatMap { group ->
+                    group.entries.filter { lyricsStore.deleteByFileName(it.fileName) }
+                }
+            }
+            if (gone.isEmpty()) {
+                _messages.tryEmit("删除失败，稍后再试")
                 refreshLyricCopies()
-                _messages.tryEmit("没有可删除的歌词副本")
                 return@launch
             }
-            // 副本都没了，偏好里那些"用户选定"的痕迹就指向空气，一并清干净
-            known.forEach { key ->
-                prefs.setLyricUri(key, null)
-                prefs.setLyricName(key, null)
-                prefs.setLyricOrigin(key, null)
+            targets.forEach { group ->
+                if (group.entries.any { !it.autoMatched && gone.any { g -> g.fileName == it.fileName } }) {
+                    group.songKey?.let { key ->
+                        prefs.setLyricUri(key, null)
+                        prefs.setLyricName(key, null)
+                        prefs.setLyricOrigin(key, null)
+                    }
+                }
             }
-            _state.update { it.copy(lyricPreview = null) }
-            reloadLyricsIfCurrent(_state.value.currentSong?.key)
+            val goneNames = gone.mapTo(HashSet()) { it.fileName }
+            _state.update {
+                it.copy(lyricPreview = it.lyricPreview?.takeIf { p -> p.fileName !in goneNames })
+            }
+            val currentKey = _state.value.currentSong?.key
+            val affected = if (currentKey != null && targets.any { it.songKey == currentKey }) {
+                reloadLyricsIfCurrent(currentKey)
+            } else {
+                false
+            }
             refreshLyricCopies()
-            _messages.tryEmit("已删除 $count 份歌词副本，释放 ${bytes / 1024} KB")
+            _messages.tryEmit(
+                if (affected) {
+                    "已删除 ${gone.size} 份歌词副本，本首歌改用文件里的歌词"
+                } else {
+                    "已删除 ${gone.size} 份歌词副本"
+                }
+            )
         }
     }
 

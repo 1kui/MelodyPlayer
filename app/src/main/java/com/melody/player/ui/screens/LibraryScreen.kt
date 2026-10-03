@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -27,7 +28,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -389,7 +390,14 @@ fun LibraryContent(
      */
     onRequestEmbed: (keys: Set<String>) -> Unit = {},
     /** 重新读一遍这些曲目的内嵌封面；传空集合表示整个曲库。 */
-    onReparseEmbedded: (keys: Set<String>) -> Unit = {}
+    onReparseEmbedded: (keys: Set<String>) -> Unit = {},
+    /**
+     * 看一眼这几首歌在 App 里存了哪几份歌词副本。
+     *
+     * 单曲行菜单与多选批量条共用这一个回调：作用对象由调用方给，
+     * 弹层不自己去读当前选择 —— 从单曲入口点开时，选中的可能是别的几首。
+     */
+    onManageLyricCopies: (keys: Set<String>) -> Unit = {}
 ) {
     // 取消归档会删掉 App 库里那份副本（原文件已不在时它就是仅存的一份），
     // 所以从行菜单进来也必须先确认一次，不能点一下就没
@@ -397,6 +405,22 @@ fun LibraryContent(
 
     val playlist = state.activePlaylist
     val inPlaylist = playlist != null
+
+    /**
+     * 列表的滚动位置提在这一层，而不是让 `LazyColumn` 自己 `remember`。
+     *
+     * 因为**换排序方式之后必须回到顶部**：排序换了，同一个下标指向的已经是另一首歌，
+     * 停在原来的位置等于让用户自己滑回去。而 `LazyListState` 有个"锚点"行为 ——
+     * 数据换了之后它会去找"原来第一条那个 key 现在排第几"，然后**把那一首重新顶到最上面**，
+     * 于是列表看起来纹丝不动，用户报的就是这个现象："换了排序还是停在原来那首歌的位置"。
+     * 要显式请求回到第一项，就得先拿得到这个 state。
+     */
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(state.sort) {
+        // 只在排序**变化**时回顶；首帧也跑一次，但那时本来就在顶部，等于没有动作
+        listState.scrollToItem(0)
+    }
 
     /**
      * 歌单视图下要用**歌单里的下标**，不是当前渲染出来的行号。
@@ -569,6 +593,7 @@ fun LibraryContent(
                 )
 
                 else -> LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         top = 4.dp,
@@ -605,6 +630,7 @@ fun LibraryContent(
                             onFetchCover = { onFetchCover(song) },
                             onEmbedTags = { onRequestEmbed(setOf(song.key)) },
                             onReparseEmbedded = { onReparseEmbedded(setOf(song.key)) },
+                            onManageLyricCopies = { onManageLyricCopies(setOf(song.key)) },
                             onEditSong = { onEditSong(song) },
                             onArchive = if (song.archived) null else {
                                 { onArchiveSong(song) }
@@ -644,53 +670,6 @@ fun LibraryContent(
                             onBeginSelection = { onBeginSelection(song) }
                         )
                     }
-                    item(key = "tail") {
-                        Column {
-                            HorizontalDivider(
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant
-                            )
-                            Text(
-                                text = buildString {
-                                    if (inPlaylist) {
-                                        append("按歌单顺序播放；点 ⋮ 可以上移、下移、从歌单移除")
-                                        append("；「从歌单移除」只动歌单，曲库里那首还在")
-                                        if (playlist != null && state.songs.isNotEmpty() &&
-                                            state.playlistSongs.size < playlist.songKeys.size
-                                        ) {
-                                            append("（有 ${playlist.songKeys.size - state.playlistSongs.size} 首已不在曲库）")
-                                        }
-                                    } else {
-                                        append(
-                                            when {
-                                                state.archivedCount > 0 ->
-                                                    "列表含系统媒体库、手动导入与 App 库（${state.archivedCount} 首）的曲目"
-                                                state.songs.any { it.imported } -> "列表包含媒体库扫描与手动导入的曲目"
-                                                else -> "全部来自系统媒体库，新增文件后可在右上角重新扫描"
-                                            }
-                                        )
-                                        append("；长按任意一行可进入多选，批量加入歌单/去封面/隐藏")
-                                        append("；点该行右侧 ⋮ 会从底部展开这一首的全部操作")
-                                        append("（封面、写入文件标签、编辑信息、归档、隐藏），每一项都带一句说明")
-                                        append("；对整份列表写标签或重读内嵌封面，在右上角 ⋮ 里")
-                                        if (state.archivedCount > 0) {
-                                            append("，已归档的那几行可以在 ⋮ 里「取消归档」")
-                                        }
-                                        if (state.hiddenSongs.isNotEmpty()) {
-                                            append("（已隐藏 ${state.hiddenSongs.size} 首，设置页可恢复）")
-                                        }
-                                    }
-                                    if (state.libraryFolderOnly) {
-                                        append("；曲库只扫「${state.libraryFolderName ?: "所选文件夹"}」，设置页可改")
-                                    }
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                            )
-                            Spacer(Modifier.height(8.dp))
-                        }
-                    }
                 }
             }
         }
@@ -716,6 +695,7 @@ fun LibraryContent(
                 // 和「写进文件」一样**不动选择**：这两个都是"对选中的这几首做一件事"，
                 // 做完一件就自动退出多选，会让想接着做第二件的用户重新选一遍
                 onReparse = { onReparseEmbedded(state.selection) },
+                onLyricCopies = { onManageLyricCopies(state.selection) },
                 modifier = Modifier.padding(bottom = contentPadding.calculateBottomPadding())
             )
         }
@@ -743,6 +723,7 @@ private fun BatchActionBar(
     onHide: () -> Unit,
     onEmbed: () -> Unit,
     onReparse: () -> Unit,
+    onLyricCopies: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -816,6 +797,13 @@ private fun BatchActionBar(
                     text = "重读内嵌封面",
                     icon = MelodyIcons.Refresh,
                     onClick = onReparse
+                )
+                // 「歌词副本」只翻看与清理 App 自己存的那几份，不碰音频文件，
+                // 所以排在「写进文件」这一对之后：越靠右越是"看一眼、收拾一下"
+                BatchChip(
+                    text = "歌词副本",
+                    icon = MelodyIcons.Lyrics,
+                    onClick = onLyricCopies
                 )
             }
             if (inPlaylist && playlistName != null) {

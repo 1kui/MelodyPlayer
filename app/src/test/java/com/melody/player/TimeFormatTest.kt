@@ -47,4 +47,36 @@ class TimeFormatTest {
         assertEquals("+10 秒", TimeFormat.delta(10_000L))
         assertEquals("-10 秒", TimeFormat.delta(-10_000L))
     }
+
+    // ---------------------------------------------------------------- ago
+
+    /** 固定"现在"，否则这一组断言会随日期漂移（今天是"3 天前"，明天就变"4 天前"）。 */
+    private val now = 1_700_000_000L
+    private fun ago(epochSec: Long) = TimeFormat.ago(epochSec, now)
+
+    @Test
+    fun `ago 说相对时间，一个月以上给日期`() {
+        assertEquals("今天保存", ago(now))
+        assertEquals("今天保存", ago(now - 3_600L))
+        assertEquals("昨天保存", ago(now - 86_400L))
+        assertEquals("3 天前保存", ago(now - 3 * 86_400L))
+        assertEquals("29 天前保存", ago(now - 29 * 86_400L))
+        // 到 30 天就换成具体日期：再往下"37 天前"要心算，日期不用
+        val fortyDays = ago(now - 40 * 86_400L)
+        assertEquals("2023-10-06", fortyDays)
+    }
+
+    @Test
+    fun `ago 把未知时间单独说出来`() {
+        // 索引里没有时间戳（老版本的记录）时是 0，不能显示成"1970-01-01"
+        assertEquals("保存时间未知", ago(0L))
+        assertEquals("保存时间未知", ago(-5L))
+    }
+
+    @Test
+    fun `ago 对未来的时间戳不倒着说`() {
+        // 设备时钟被改过、或索引里写进了未来时间：days <= 0 一律按"今天"，
+        // 别冒出"-2 天前保存"这种句子
+        assertEquals("今天保存", ago(now + 86_400L))
+    }
 }

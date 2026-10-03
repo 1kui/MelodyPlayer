@@ -182,4 +182,51 @@ class LyricCopyGroupsTest {
         assertEquals(entries.size, flat.size)
         assertEquals(entries.map { it.fileName }.toSet(), flat.map { it.fileName }.toSet())
     }
+
+    // ------------------------------------------------------- 只看某几首（restrict）
+
+    private fun groupsOf(vararg entries: LyricCopyEntry) =
+        LyricCopyGroups.group(entries.toList()) { titles[it] }
+
+    @Test
+    fun `只看点名的这几首，别人的副本不出现`() {
+        val groups = groupsOf(
+            entry("a.lrc", "ms:1", "晴天"),
+            entry("b.lrc", "ms:2", "七里香"),
+            entry("c.lrc", "lib:晴天.mp3", "晴天 · 归档快照")
+        )
+        // 弹层是从"某一行/某一首"点开的，别的歌不该混进来
+        val shown = LyricCopyGroups.restrict(groups, setOf("ms:2"))
+        assertEquals(listOf("ms:2"), shown.map { it.songKey })
+    }
+
+    @Test
+    fun `未关联的副本永远跟着出现，否则就再没有入口能删它们`() {
+        val groups = groupsOf(
+            entry("a.lrc", "ms:1", "晴天"),
+            entry("orphan.lrc", null, "认不出来的那份")
+        )
+        // 设置页那份"看全部"的清单已经拆掉：孤儿没有歌曲可依附，
+        // 一旦被筛掉就是磁盘上永远清不掉的死角
+        val shown = LyricCopyGroups.restrict(groups, setOf("ms:1"))
+        assertEquals(listOf("ms:1", null), shown.map { it.songKey })
+    }
+
+    @Test
+    fun `筛选不改顺序，也不重复`() {
+        val groups = groupsOf(
+            entry("old.lrc", "ms:1", "晴天", savedAtSec = 100L),
+            entry("new.lrc", "ms:2", "七里香", savedAtSec = 900L),
+            entry("orphan.lrc", null, "x", savedAtSec = 500L)
+        )
+        // 组顺序由 group() 定好（新的在前、未关联沉底），restrict 只做过滤
+        assertEquals(listOf("ms:2", null), LyricCopyGroups.restrict(groups, setOf("ms:2")).map { it.songKey })
+        assertEquals(groups, LyricCopyGroups.restrict(groups, setOf("ms:1", "ms:2")))
+    }
+
+    @Test
+    fun `一个都没点名时只剩未关联的副本`() {
+        val groups = groupsOf(entry("a.lrc", "ms:1", "晴天"), entry("orphan.lrc", null, "x"))
+        assertEquals(listOf<String?>(null), LyricCopyGroups.restrict(groups, emptySet()).map { it.songKey })
+    }
 }

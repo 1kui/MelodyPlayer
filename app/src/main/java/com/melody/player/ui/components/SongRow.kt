@@ -110,6 +110,14 @@ fun SongRow(
      */
     onReparseEmbedded: (() -> Unit)? = null,
     /**
+     * 看一眼这首歌在 App 里存了哪几份歌词副本（可预览、可删）。
+     *
+     * 这个入口以前只长在**设置页**里（那份按全库列出的清单）—— 而用户的念头从来
+     * 不是"我要去整理歌词目录"，是"这首歌的歌词不对劲"。放在这一行的菜单里，
+     * 就是把他正看着的那首直接送进去。
+     */
+    onManageLyricCopies: (() -> Unit)? = null,
+    /**
      * 多选模式下这一行处于选中状态。
      *
      * 为 null 时就是普通单选态：不出复选框、行菜单照常。
@@ -251,6 +259,7 @@ fun SongRow(
                             onFetchCover = onFetchCover,
                             onReparseEmbedded = onReparseEmbedded,
                             onEmbedTags = onEmbedTags,
+                            onManageLyricCopies = onManageLyricCopies,
                             onEditSong = onEditSong,
                             onArchive = onArchive,
                             onUnarchive = onUnarchive,
@@ -287,6 +296,7 @@ private fun songRowActions(
     onFetchCover: (() -> Unit)?,
     onReparseEmbedded: (() -> Unit)?,
     onEmbedTags: (() -> Unit)?,
+    onManageLyricCopies: (() -> Unit)?,
     onEditSong: (() -> Unit)?,
     onArchive: (() -> Unit)?,
     onUnarchive: (() -> Unit)?,
@@ -365,6 +375,19 @@ private fun songRowActions(
         }
     }.startSection("封面与标签")
 
+    // 单独一组而不是塞进「封面与标签」：用户找它时脑子里想的是"歌词"，
+    // 而上面那组标题里没有这两个字 —— 分组标题就是这一层菜单的目录
+    val lyrics = onManageLyricCopies?.let {
+        listOf(
+            SheetAction(
+                MelodyIcons.Lyrics,
+                "歌词副本…",
+                subtitle = "看看 App 里为这首存了哪几份歌词，可预览、可删",
+                onClick = it
+            )
+        ).startSection("歌词")
+    } ?: emptyList()
+
     val info = onEditSong?.let {
         listOf(
             SheetAction(
@@ -422,7 +445,7 @@ private fun songRowActions(
         }
     }.startSection("曲库管理")
 
-    return play + playlist + playlistOrder + coverAndTags + info + libraryOps
+    return play + playlist + playlistOrder + coverAndTags + lyrics + info + libraryOps
 }
 
 /** 把组标题打在**这一组的第一项**上；空组原样返回（不然会凭空多出一个组标题）。 */

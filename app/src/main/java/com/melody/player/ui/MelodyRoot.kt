@@ -18,9 +18,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -44,8 +48,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.melody.player.core.FileNames
+import com.melody.player.core.LyricCopyEntry
+import com.melody.player.core.LyricCopyGroup
+import com.melody.player.core.LyricCopyGroups
 import com.melody.player.core.Playlist
 import com.melody.player.core.Song
 import com.melody.player.core.SongQuery
@@ -54,6 +63,7 @@ import com.melody.player.ui.components.CoverCandidatesDialog
 import com.melody.player.ui.components.CoverSourceDialog
 import com.melody.player.ui.components.EmbedTagsDialog
 import com.melody.player.ui.components.LocalArtworkShape
+import com.melody.player.ui.components.LyricCopiesSheet
 import com.melody.player.ui.components.MelodySnackbarHost
 import com.melody.player.ui.components.MiniPlayer
 import com.melody.player.ui.components.PlaylistNameDialog
@@ -118,6 +128,12 @@ fun MelodyRoot(
     // 清空队列会**立刻停止播放**，而它是顶栏上一颗不带文字的图标按钮 ——
     // 点错的代价是正在听的歌没了、队列也没了。加一道确认。
     var pendingQueueClear by remember { mutableStateOf(false) }
+    // 歌词副本的三个待确认动作（删一份 / 删一首的全部 / 删列出的全部）。
+    // 状态提在根界面：弹层本身也在这儿，而它的行是会被刷新的 —— 确认框要是挂在
+    // 某一行的作用域里，"删掉这一份"跑完那一行就没了，框会跟着消失。
+    var pendingDeleteLyric by remember { mutableStateOf<LyricCopyEntry?>(null) }
+    var pendingDeleteLyricGroup by remember { mutableStateOf<LyricCopyGroup?>(null) }
+    var pendingDeleteLyricShown by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -340,7 +356,8 @@ fun MelodyRoot(
                             // 曲库页只报"要处理哪几首"，勾选框由根界面统一弹（见下面的
                             // EmbedTagsDialog）—— 播放页也要用同一个框，而它跨不过页面
                             onRequestEmbed = vm::requestEmbed,
-                            onReparseEmbedded = vm::reparseEmbeddedArtwork
+                            onReparseEmbedded = vm::reparseEmbeddedArtwork,
+                            onManageLyricCopies = vm::requestLyricCopies
                         )
 
                         MelodyTab.QUEUE -> QueueContent(
@@ -367,11 +384,6 @@ fun MelodyRoot(
                             onClearArchive = vm::clearArchive,
                             onUnarchive = { entry -> vm.unarchiveSong(entry) },
                             onAutoFetchLyricsChange = vm::setAutoFetchLyrics,
-                            onPreviewLyricCopy = vm::previewLyricCopy,
-                            onDismissLyricPreview = vm::dismissLyricPreview,
-                            onDeleteLyricCopy = vm::deleteLyricCopy,
-                            onDeleteLyricCopyGroup = vm::deleteLyricCopyGroup,
-                            onDeleteAllLyricCopies = vm::deleteAllLyricCopies,
                             onKwmScanDevice = vm::scanKwmDevice,
                             onKwmPickFolder = { kwmFolderLauncher.launch(null) },
                             onKwmRescanFolder = vm::rescanKwmFolder,
@@ -439,6 +451,9 @@ fun MelodyRoot(
                     onEmbedTags = vm::requestEmbedForCurrent,
                     onAddToPlaylist = {
                         state.currentSong?.let(vm::beginAddToPlaylist)
+                    },
+                    onManageLyricCopies = {
+                        state.currentSong?.let { vm.requestLyricCopies(setOf(it.key)) }
                     }
                 )
             }
@@ -610,6 +625,140 @@ fun MelodyRoot(
                 )
             }
 
+            // 「歌词副本」弹层。挂在根界面而不是曲库页里：它的三个入口
+            // （曲库行菜单、多选批量条、播放页）跨了两层，而播放页是一层全屏浮层 ——
+            // 长在曲库页里的弹层会被它整个盖住。
+            //
+            // 弹层开着的时候删除副本不会把它关掉（它与被刷新的列表行没有关系），
+            // 用户能一份一份接着收拾，这是从设置页那份清单搬过来时最容易丢掉的一点。
+            state.lyricCopyRequestKeys?.let { keys ->
+                val shown = LyricCopyGroups.restrict(state.lyricCopyGroups, keys)
+                LyricCopiesSheet(
+                    groups = shown,
+                    requestedCount = keys.size,
+                    onPreview = vm::previewLyricCopy,
+                    onDelete = { pendingDeleteLyric = it },
+                    onDeleteGroup = { pendingDeleteLyricGroup = it },
+                    onDeleteAllShown = {
+                        if (shown.any { it.entries.isNotEmpty() }) pendingDeleteLyricShown = true
+                    },
+                    onDismiss = vm::dismissLyricCopies
+                )
+
+                // 删一份 / 删一首的全部 / 删列出的全部 —— 三种量级共用上面那个"待删"状态，
+                // 放在这里是因为它们都得先说清"删掉之后这首歌会退回什么"，
+                // 而那句话与列表里是哪几首无关
+                pendingDeleteLyric?.let { entry ->
+                    AlertDialog(
+                        onDismissRequest = { pendingDeleteLyric = null },
+                        title = { Text("删除这份歌词副本？") },
+                        text = {
+                            Text(
+                                "「${entry.label}」的这一份会被删掉。" +
+                                    "不会动你的音乐文件，也不会动写进音频文件里的歌词 —— " +
+                                    "删掉之后这首歌退回使用文件内嵌歌词或同名 .lrc 文件。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    pendingDeleteLyric = null
+                                    vm.deleteLyricCopy(entry)
+                                }
+                            ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingDeleteLyric = null }) { Text("取消") }
+                        }
+                    )
+                }
+
+                pendingDeleteLyricGroup?.let { group ->
+                    AlertDialog(
+                        onDismissRequest = { pendingDeleteLyricGroup = null },
+                        title = {
+                            Text(
+                                text = "删除「${group.title}」的全部副本？",
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        text = { Text(lyricGroupDeleteText(group)) },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    pendingDeleteLyricGroup = null
+                                    vm.deleteLyricCopyGroup(group)
+                                }
+                            ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingDeleteLyricGroup = null }) { Text("取消") }
+                        }
+                    )
+                }
+
+                if (pendingDeleteLyricShown) {
+                    val total = shown.sumOf { it.count }
+                    AlertDialog(
+                        onDismissRequest = { pendingDeleteLyricShown = false },
+                        title = { Text("删除这 $total 份歌词副本？") },
+                        text = {
+                            Text(
+                                "上面列出的 ${shown.count { it.entries.isNotEmpty() }} 首歌的 $total 份副本会一起删掉。" +
+                                    "不会动你的音乐文件，也不会动已经写进音频文件里的歌词 —— " +
+                                    "删掉之后这几首退回使用文件内嵌歌词或同名 .lrc 文件。\n" +
+                                    "其中联网自动匹配的那些删掉后，下次播到它们、" +
+                                    "且「自动联网获取歌词」开着的话，会重新匹配一次。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    pendingDeleteLyricShown = false
+                                    vm.deleteLyricCopyGroups(shown)
+                                }
+                            ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingDeleteLyricShown = false }) { Text("取消") }
+                        }
+                    )
+                }
+            }
+
+            // 副本正文。预览要能盖在弹层上面，所以和弹层同级挂在这里
+            state.lyricPreview?.let { preview ->
+                AlertDialog(
+                    onDismissRequest = vm::dismissLyricPreview,
+                    title = {
+                        Text(
+                            text = preview.label,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                text = preview.text.trim(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = vm::dismissLyricPreview) { Text("关闭") }
+                    }
+                )
+            }
+
             // 提示条是全局唯一的，但必须画在**最上层**：挂在 Scaffold 的 snackbarHost 上时，
             // 全屏播放页那层浮层会把它整个盖住 —— 用户在播放页点「获取封面」，
             // 提示却压在播放页底下，只有退回主界面才看见，像是提示跑错了页面。
@@ -661,3 +810,22 @@ private fun libraryVisibleSongs(state: PlayerUiState): List<Song> =
     } else {
         state.filtered
     }
+
+/**
+ * 「删除「某某」的全部副本？」那一屏的正文。
+ *
+ * 单独写出来是为了把**两处**容易写错的边界固定住：
+ *  1. 说清删的是"App 里的副本"，不是用户的音频文件 —— 这是最常见的一种误解，
+ *     用户看到"删除歌词"第一反应是"我的歌会不会被改"；
+ *  2. 自动匹配的那几份删了还会自己回来（下次播到它、联网获取开着的话），
+ *     而"选定"的那份不会 —— 不说这句，用户会以为删除没生效。
+ */
+private fun lyricGroupDeleteText(group: LyricCopyGroup): String = buildString {
+    append("这首歌名下的 ${group.count} 份副本（共 ${FileNames.size(group.sizeBytes)}）会一起删掉。")
+    append("不会动你的音乐文件，也不会动已经写进音频文件里的歌词 —— ")
+    append("删掉之后这首歌退回使用文件内嵌歌词或同名 .lrc 文件。")
+    if (group.autoCount > 0) {
+        append("其中 ${group.autoCount} 份是联网自动匹配的缓存：下次播到它、")
+        append("且「自动联网获取歌词」开着的话，会重新匹配一次。")
+    }
+}
